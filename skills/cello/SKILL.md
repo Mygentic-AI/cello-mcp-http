@@ -180,7 +180,12 @@ change, waive or replace it.
 
   Nothing takes effect until your operator runs `cello policy approve <id> --agent <name>` in a real
   terminal on the daemon's machine and types `y` after reading the text. **There is no approve tool, here
-  or anywhere.** Tell your operator the command and the id.
+  or anywhere.** Tell your operator the command and the id. Always pass `--agent <name>`, or the command
+  answers `proposal_not_found` for drafts that exist.
+
+**Setting up a team of agents that trust each other, or a strict rule for one that talks to the public:**
+read [policies.md](policies.md). It has the tested wording, why a rule about one peer beats a rule about a
+whole tier, how to roll it out to many agents, and how to check it works.
 
 ## Channels
 

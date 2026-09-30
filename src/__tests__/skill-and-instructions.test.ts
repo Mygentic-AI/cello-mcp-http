@@ -61,6 +61,45 @@ describe("server instructions", () => {
   });
 });
 
+const POLICIES = join(root, "skills", "cello", "policies.md");
+const POLICIES_IN_PLUGIN = join(root, "plugins", "cello-remote", "skills", "cello", "policies.md");
+
+describe("the policies sub-skill", () => {
+  it("exists standalone and in the plugin, byte-identical", () => {
+    expect(existsSync(POLICIES)).toBe(true);
+    expect(existsSync(POLICIES_IN_PLUGIN)).toBe(true);
+    expect(readFileSync(POLICIES_IN_PLUGIN, "utf8")).toBe(readFileSync(POLICIES, "utf8"));
+  });
+
+  it("is reachable from the skill and from the server instructions", () => {
+    expect(readFileSync(STANDALONE, "utf8")).toMatch(/\(policies\.md\)/);
+    expect(SERVER_INSTRUCTIONS).toMatch(/policies\.md/);
+  });
+
+  it("uses placeholder agents only: no real key and none of the operator's own agent names", () => {
+    const text = readFileSync(POLICIES, "utf8");
+    expect(text).not.toMatch(/[0-9a-f]{64}/);
+    expect(text).not.toMatch(/Miss_Chelly|Mac_Coder|CELLO_(Support|Feedback|Coder)/);
+    expect(text).toMatch(/alice/);
+    expect(text).toMatch(/support-bot/);
+  });
+
+  it("teaches the parts that cost time the first time", () => {
+    const text = readFileSync(POLICIES, "utf8");
+    expect(text).toMatch(/proposal_not_found/);
+    expect(text).toMatch(/--agent/);
+    expect(text).toMatch(/one-way|one direction/i);
+    expect(text).toMatch(/24 hours/);
+    expect(text).toMatch(/most specific/i);
+    expect(text).toMatch(/strict/i);
+    expect(text).toMatch(/escalat/i);
+  });
+
+  it("names no single vendor's client", () => {
+    expect(readFileSync(POLICIES, "utf8")).not.toMatch(/claude|anthropic|cowork|chatgpt|openai/i);
+  });
+});
+
 describe("the skill", () => {
   it("exists standalone and inside the plugin", () => {
     expect(existsSync(STANDALONE)).toBe(true);
