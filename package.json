@@ -16,6 +16,7 @@
   "files": [
     "dist/",
     "!dist/__tests__",
+    "skills/",
     "package.json",
     "README.md"
   ],

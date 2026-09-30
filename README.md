@@ -28,6 +28,7 @@ It holds no keys, runs no node, and keeps no conversation state. Your daemon sti
 - [Limiting what the endpoint can do](#limiting-what-the-endpoint-can-do)
 - [Giving it a public address](#giving-it-a-public-address)
 - [Connecting a client](#connecting-a-client)
+- [Teaching the client to use CELLO](#teaching-the-client-to-use-cello)
 - [Running it as a service](#running-it-as-a-service)
 - [Operating it](#operating-it)
 - [Security model](#security-model)
@@ -236,6 +237,64 @@ the tokens and of the pairing code.
 `plugins/cello-remote` is a small plugin for one client that reads `CELLO_MCP_URL` and `CELLO_MCP_TOKEN`
 from the environment. You do not need it. Any client that can send the header in option A works the
 same way.
+
+## Teaching the client to use CELLO
+
+Connecting gives a client the tools. It does not tell the model how CELLO works: that every send needs a
+`signal`, that a session must be closed on both sides to seal, that an agent should be named on every call.
+This package carries that guidance two ways. Use whichever your client supports; the two are consistent.
+
+### 1. Server instructions (nothing to install)
+
+On every connection the endpoint sends a short usage guide as the MCP server's `instructions`. A client
+that honours that field puts it in front of the model automatically. There is nothing to configure. To
+see whether your client passes it on, connect and ask the model how to end a CELLO conversation. It should
+say to close the session, then fetch the receipt.
+
+Clients differ in whether they show server instructions to the model at all. If yours does not, use the
+skill below, or paste the guide into whatever "custom instructions" or system prompt your client offers.
+The text is `src/instructions.ts` in this repository (about 3,000 characters).
+
+### 2. The skill (fuller guidance)
+
+The skill is a folder holding one file, `SKILL.md`: a short header (`name`, `description`) followed by
+plain Markdown. Clients that support the skill format load it when the task matches its description. It
+covers everything the instructions do, plus channels, contacts, trust signals, policies, proofs and an
+error table.
+
+It ships in three places, all the same file:
+
+| Where | Use it for |
+|---|---|
+| `skills/cello/SKILL.md` in this repository | The source. Read it, copy it, or zip the folder. |
+| `skills/cello/` inside the npm package | `npm pack @cello-protocol/mcp-http`, or look in `node_modules/@cello-protocol/mcp-http/skills/cello/` after installing. |
+| `plugins/cello-remote/skills/cello/` | For a client that installs it as part of a plugin. |
+
+**To import it, use whichever of these your client offers:**
+
+- **Upload.** Some clients take a skill as a zip file in a settings page for skills or capabilities.
+  Make the zip with the folder at the top level, so `SKILL.md` sits inside a `cello/` folder and not at
+  the root of the archive:
+
+  ```
+  cd skills && zip -r cello-skill.zip cello
+  ```
+
+  Upload `cello-skill.zip` where the client asks for a skill.
+- **Copy the folder.** Some clients read skills from a directory on disk. Copy the `cello/` folder into
+  that client's skills directory, then restart it or start a new session. The directory is the
+  client's, so take the path from its documentation.
+- **Install a plugin.** If your client installs plugins from a repository, `plugins/cello-remote`
+  bundles this skill together with the connection settings.
+- **No skill support.** Paste the contents of `SKILL.md` into the client's custom instructions, or into
+  the system prompt of the agent you are building. It is ordinary Markdown.
+
+**Check it took.** Ask the model, without naming CELLO's tools, how to send a message to another agent
+and end the conversation. A model that has the skill mentions the `signal` parameter, naming the agent on
+each call, and fetching the receipt after closing.
+
+The skill and the plugin copy are checked identical by the test suite, so they cannot drift apart.
+Update `skills/cello/SKILL.md` and copy it over `plugins/cello-remote/skills/cello/SKILL.md`.
 
 ## Running it as a service
 
