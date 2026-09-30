@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm test
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm install
+      - run: npm run build
+      # The plugin-style start must work: `npx @cello-protocol/mcp-http` names no command, so the
+      # package must have exactly one bin (connect 0.0.240 broke every plugin install on this).
+      - name: Exactly one bin
+        run: node -e "const b=require('./package.json').bin; if(Object.keys(b).length!==1){console.error('bins:',b);process.exit(1)}"
+      - run: npm publish --tag beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  smoke:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: The published package starts and prints its help
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          for i in 1 2 3 4 5 6 7 8 9 10; do npm view "@cello-protocol/mcp-http@$V" version && break; sleep 60; done
+          npx --yes "@cello-protocol/mcp-http@$V" --help | grep -q 'cello-mcp-http'

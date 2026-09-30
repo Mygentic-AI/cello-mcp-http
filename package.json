@@ -1,0 +1,37 @@
+{
+  "name": "@cello-protocol/mcp-http",
+  "version": "0.0.1",
+  "description": "The CELLO MCP tools over Streamable HTTP, in front of your own local CELLO daemon, behind a bearer token and agent and tool allowlists.",
+  "type": "module",
+  "repository": "https://github.com/Mygentic-AI/cello-mcp-http",
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "cello-mcp-http": "./dist/bin/cello-mcp-http.js"
+  },
+  "files": [
+    "dist/",
+    "!dist/__tests__",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cello-protocol/connect": "latest",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "cello-remote",
+  "displayName": "CELLO (remote)",
+  "version": "0.1.0",
+  "description": "Connects this client to a CELLO endpoint by URL and bearer token. Set CELLO_MCP_URL and CELLO_MCP_TOKEN before starting the client.",
+  "author": { "name": "Mygentic AI", "url": "https://github.com/Mygentic-AI" },
+  "homepage": "https://cello.mygentic.ai",
+  "repository": "https://github.com/Mygentic-AI/cello-mcp-http",
+  "keywords": ["cello", "agent-to-agent", "mcp", "http"],
+  "mcpServers": "./.mcp.json"
+}

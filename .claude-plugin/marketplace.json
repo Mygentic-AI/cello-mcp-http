@@ -1,0 +1,12 @@
+{
+  "name": "cello-remote",
+  "description": "CELLO for MCP clients that reach it by URL: the CELLO tools served by @cello-protocol/mcp-http on the machine where your CELLO daemon runs.",
+  "owner": { "name": "Mygentic AI", "url": "https://github.com/Mygentic-AI" },
+  "plugins": [
+    {
+      "name": "cello-remote",
+      "source": "./plugins/cello-remote",
+      "description": "Connects this client to a CELLO endpoint by URL and bearer token. The endpoint (cello-mcp-http) runs beside the CELLO daemon, on this machine or another."
+    }
+  ]
+}
