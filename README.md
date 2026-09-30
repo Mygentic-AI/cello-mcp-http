@@ -38,8 +38,8 @@ limited by them.
 
 ## Point a client at it
 
-Give the client the URL (`http://127.0.0.1:8787/mcp`, or your TLS URL) and the header
-`Authorization: Bearer <token>`.
+**A client that can send a header** (Claude Code, Hermes, most gateways): the URL
+(`http://127.0.0.1:8787/mcp`, or your public HTTPS URL) and `Authorization: Bearer <token>`.
 
 For Claude Code, this repository is also a plugin marketplace:
 
@@ -50,5 +50,20 @@ export CELLO_MCP_TOKEN=<token>
 /plugin install cello-remote@cello-remote
 ```
 
-If CELLO runs on the same machine as Claude Code, use the `cello` plugin from
-`Mygentic-AI/cello-client` instead; it needs no endpoint.
+**A client that only takes a URL** (the Claude app): add `--public-url https://your-host` (your public
+origin, no path). The endpoint then also acts as its own OAuth server. When the app connects, a page from
+your endpoint asks for a pairing code; get one at the daemon's machine:
+
+```
+npx @cello-protocol/mcp-http pair            # one-time code, 10 minutes
+npx @cello-protocol/mcp-http clients         # which apps are signed in
+npx @cello-protocol/mcp-http revoke [<id>]   # sign every app (or one) out
+```
+
+Sign-in state lives in `~/.cello/mcp-http/` (`--state-dir` to move it), mode 0600, holding only hashes of
+tokens and of the pairing code.
+
+For the full setup, including a public HTTPS address with Tailscale Funnel, see the `remote-access` skill in
+the `cello` plugin (`Mygentic-AI/cello-client`).
+
+If CELLO runs on the same machine as Claude Code, use the `cello` plugin instead; it needs no endpoint.
