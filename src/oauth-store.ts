@@ -5,7 +5,7 @@
  * The server re-reads this file on every token check, so `cello-mcp-http revoke`, which edits it from another
  * process, takes effect on the next request.
  */
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, open, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
@@ -45,19 +45,67 @@ export async function saveState(stateDir: string, state: OAuthState): Promise<vo
   await writePrivate(fileOf(stateDir), JSON.stringify(state, null, 2));
 }
 
-// One writer at a time within this process: two token issues interleaving their read-modify-write would
-// drop one of them.
+// Two layers. In this process, a queue: two token issues interleaving their read-modify-write would drop
+// one. Across processes, a lock file: `cello-mcp-http revoke` runs as its own process, and without the
+// lock a refresh landing mid-revoke would write the revoked tokens back.
 const queues = new Map<string, Promise<unknown>>();
+const LOCK_WAIT_MS = 10_000;
 
-/** Read-modify-write of the state file, serialized per state directory. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Runs `fn` holding `<stateDir>/oauth.json.lock`. A lock left by a process that no longer exists is taken over. */
+export async function withStateLock<T>(stateDir: string, fn: () => Promise<T>): Promise<T> {
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+  const lock = join(stateDir, "oauth.json.lock");
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const h = await open(lock, "wx", 0o600);
+      await h.writeFile(String(process.pid));
+      await h.close();
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      const holder = Number((await readFile(lock, "utf8").catch(() => "")).trim());
+      if (Number.isInteger(holder) && holder > 0 && !alive(holder)) {
+        await rm(lock, { force: true });
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${lock} (held by pid ${holder}); if no cello-mcp-http is running, delete it`);
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rm(lock, { force: true });
+  }
+}
+
+/** Read-modify-write of the state file: queued in this process, locked across processes. */
 export async function updateState<T>(stateDir: string, fn: (s: OAuthState) => T): Promise<T> {
   const prev = queues.get(stateDir) ?? Promise.resolve();
-  const run = prev.catch(() => {}).then(async () => {
+  const run = prev.catch(() => {}).then(() => withStateLock(stateDir, async () => {
     const s = await loadState(stateDir);
     const out = fn(s);
     await saveState(stateDir, s);
     return out;
-  });
+  }));
+  queues.set(stateDir, run);
+  return run;
+}
+
+/** Serializes any other read-modify-write in the state directory (the pairing file) the same way. */
+export async function serialized<T>(stateDir: string, fn: () => Promise<T>): Promise<T> {
+  const prev = queues.get(stateDir) ?? Promise.resolve();
+  const run = prev.catch(() => {}).then(() => withStateLock(stateDir, fn));
   queues.set(stateDir, run);
   return run;
 }

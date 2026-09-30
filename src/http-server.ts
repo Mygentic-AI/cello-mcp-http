@@ -133,6 +133,8 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
   if (opts.oauth !== undefined) {
     publicBase = new URL(opts.oauth.publicUrl.replace(/\/+$/, "") + "/");
     if (publicBase.pathname !== "/") throw new McpHttpConfigError("bad_public_url", `--public-url must be an origin with no path, like https://host.example; got ${opts.oauth.publicUrl}`);
+    const loopback = publicBase.hostname === "localhost" || publicBase.hostname === "127.0.0.1";
+    if (publicBase.protocol !== "https:" && !loopback) throw new McpHttpConfigError("bad_public_url", `--public-url must be https (tokens travel on it); got ${opts.oauth.publicUrl}`);
     provider = new CelloOAuthProvider(opts.oauth.stateDir, log);
     resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(new URL(MCP_PATH, publicBase));
   }
@@ -144,8 +146,9 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     if (timingSafeEqual(digest(presented), digest(opts.token))) return true;
     if (provider === undefined) return false;
     try {
-      await provider.verifyAccessToken(presented);
-      return true;
+      const info = await provider.verifyAccessToken(presented);
+      // A token minted for another resource is not a token for this one.
+      return info.resource === undefined || info.resource.href === new URL(MCP_PATH, publicBase).href;
     } catch {
       return false;
     }

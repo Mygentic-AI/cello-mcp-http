@@ -12,7 +12,7 @@ import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprot
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { OAuthClientInformationFull, OAuthTokens, OAuthTokenRevocationRequest } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { InvalidGrantError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { InvalidGrantError, InvalidTokenError, TooManyRequestsError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { LogFn } from "@cello-protocol/connect/lib";
 import { loadState, tokenHash, updateState } from "./oauth-store.js";
 import { consumePairingCode } from "./pairing.js";
@@ -21,6 +21,9 @@ export const ACCESS_TTL_MS = 60 * 60_000;
 export const REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
 const PENDING_TTL_MS = 10 * 60_000;
 const CODE_TTL_MS = 5 * 60_000;
+/** Registration is open to the internet; this bounds what a flood of it can store. */
+export const MAX_CLIENTS = 100;
+const UNUSED_CLIENT_TTL_S = 60 * 60;
 
 interface Pending { client: OAuthClientInformationFull; params: AuthorizationParams; expiresAt: number }
 interface AuthCode { clientId: string; challenge: string; redirectUri: string; scopes: string[]; resource?: string; expiresAt: number }
@@ -54,7 +57,15 @@ export class CelloOAuthProvider implements OAuthServerProvider {
         return (await loadState(stateDir)).clients[clientId];
       },
       async registerClient(client: OAuthClientInformationFull) {
-        await updateState(stateDir, (s) => { s.clients[client.client_id] = client; });
+        await updateState(stateDir, (s) => {
+          const nowS = Math.floor(Date.now() / 1000);
+          const holders = new Set(s.tokens.map((t) => t.clientId));
+          for (const [id, c] of Object.entries(s.clients)) {
+            if (!holders.has(id) && (c.client_id_issued_at ?? 0) < nowS - UNUSED_CLIENT_TTL_S) delete s.clients[id];
+          }
+          if (Object.keys(s.clients).length >= MAX_CLIENTS) throw new TooManyRequestsError("too many registered clients; revoke unused ones with cello-mcp-http revoke");
+          s.clients[client.client_id] = client;
+        });
         log("mcp.http.oauth.client.registered", { clientId: client.client_id, name: client.client_name });
         return client;
       },
@@ -62,11 +73,17 @@ export class CelloOAuthProvider implements OAuthServerProvider {
   }
 
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
+    const id = await this.openPending(client, params);
+    this.log("mcp.http.oauth.authorize.opened", { clientId: client.client_id });
+    res.status(200).type("html").send(this.consentPage(id, client));
+  }
+
+  /** Records an authorization request server-side; the page only ever carries this id. */
+  async openPending(client: OAuthClientInformationFull, params: AuthorizationParams = { codeChallenge: "", redirectUri: client.redirect_uris[0] ?? "" }): Promise<string> {
     this.prune();
     const id = secret();
     this.pending.set(id, { client, params, expiresAt: Date.now() + PENDING_TTL_MS });
-    this.log("mcp.http.oauth.authorize.opened", { clientId: client.client_id });
-    res.status(200).type("html").send(this.consentPage(id, client));
+    return id;
   }
 
   private consentPage(id: string, client: OAuthClientInformationFull, error?: string): string {
@@ -100,11 +117,8 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
     const { result, attemptsLeft } = await consumePairingCode(this.stateDir, code);
     if (result !== "ok") {
       this.log("mcp.http.oauth.pairing.refused", { clientId: p.client.client_id, result, attemptsLeft });
-      const why = result === "wrong" && attemptsLeft > 0
-        ? `That code is not right. ${attemptsLeft} ${attemptsLeft === 1 ? "try" : "tries"} left.`
-        : result === "expired"
-          ? "That code has expired. Run cello-mcp-http pair again for a new one."
-          : "There is no live pairing code. Run cello-mcp-http pair for a new one.";
+      // One message for every failure, so the page does not tell a guesser when a code is live.
+      const why = "That code did not work. Run cello-mcp-http pair for a fresh code and try again.";
       res.status(401).type("html").send(this.consentPage(id, p.client, why));
       return;
     }

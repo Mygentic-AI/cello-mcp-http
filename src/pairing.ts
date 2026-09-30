@@ -9,6 +9,7 @@ import { randomInt, createHash, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { writePrivate } from "./private-file.js";
+import { serialized } from "./oauth-store.js";
 
 export const PAIRING_TTL_MS = 10 * 60_000;
 export const PAIRING_MAX_ATTEMPTS = 5;
@@ -26,7 +27,7 @@ export async function createPairingCode(stateDir: string, opts: { ttlMs?: number
   const code = `${raw.slice(0, 4)}-${raw.slice(4)}`;
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
   const file: PairingFile = { hash: hashOf(code), expiresAt: Date.now() + (opts.ttlMs ?? PAIRING_TTL_MS), attempts: 0 };
-  await writePrivate(join(stateDir, "pairing"), JSON.stringify(file));
+  await serialized(stateDir, () => writePrivate(join(stateDir, "pairing"), JSON.stringify(file)));
   return code;
 }
 
@@ -34,6 +35,11 @@ export type PairingResult = "ok" | "no_code" | "expired" | "wrong";
 
 /** Checks a submitted code. Consumes it on success; counts and eventually burns it on failure. */
 export async function consumePairingCode(stateDir: string, submitted: string): Promise<{ result: PairingResult; attemptsLeft: number }> {
+  // Serialized so a burst of guesses cannot all read attempts=0 and each spend "one" of the five.
+  return serialized(stateDir, () => checkCode(stateDir, submitted));
+}
+
+async function checkCode(stateDir: string, submitted: string): Promise<{ result: PairingResult; attemptsLeft: number }> {
   const path = join(stateDir, "pairing");
   let file: PairingFile;
   try {
