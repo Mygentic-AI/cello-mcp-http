@@ -46,6 +46,8 @@ button{margin-top:1rem;font-size:1rem;padding:.6rem 1.2rem;border-radius:6px;bor
 export class CelloOAuthProvider implements OAuthServerProvider {
   private readonly pending = new Map<string, Pending>();
   private readonly codes = new Map<string, AuthCode>();
+  /** Requests already approved, so a second submit of the same form (a double click, a browser resend) is not reported as expired. */
+  private readonly approved = new Map<string, number>();
 
   constructor(private readonly stateDir: string, private readonly log: LogFn) {}
 
@@ -109,6 +111,10 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
     const body = (req.body ?? {}) as { request?: unknown; code?: unknown };
     const id = typeof body.request === "string" ? body.request : "";
     const p = this.pending.get(id);
+    if (!p && this.approved.has(id)) {
+      res.status(200).type("html").send(page("Already approved", "<h1>Already approved</h1><p>This sign-in was approved. Return to the app; you can close this page.</p>"));
+      return;
+    }
     if (!p) {
       res.status(400).type("html").send(page("Request expired", "<h1>This request has expired</h1><p>Go back to the app and start connecting again.</p>"));
       return;
@@ -123,6 +129,7 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
       return;
     }
     this.pending.delete(id);
+    this.approved.set(id, Date.now() + PENDING_TTL_MS);
     const authCode = secret();
     this.codes.set(authCode, {
       clientId: p.client.client_id,
@@ -197,6 +204,7 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
     const now = Date.now();
     for (const [k, v] of this.pending) if (v.expiresAt < now) this.pending.delete(k);
     for (const [k, v] of this.codes) if (v.expiresAt < now) this.codes.delete(k);
+    for (const [k, v] of this.approved) if (v < now) this.approved.delete(k);
   }
 }
 

@@ -175,6 +175,18 @@ describe("O3 pairing code", () => {
     expect(r.headers.get("location")).toBeNull();
   });
 
+  it("submitting the same approved form twice says it is already approved, not expired", async () => {
+    const { client_id } = await register();
+    const { request } = await openAuthorize(client_id);
+    const code = await createPairingCode(stateDir);
+    expect((await approve(request, code)).status).toBe(302);
+    const again = await approve(request, code);
+    expect(again.status).toBe(200);
+    const html = await again.text();
+    expect(html).toContain("Already approved");
+    expect(html).not.toContain("expired");
+  });
+
   it("a code works once", async () => {
     const { client_id } = await register();
     const code = await createPairingCode(stateDir);

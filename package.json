@@ -1,6 +1,6 @@
 {
   "name": "@cello-protocol/mcp-http",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "The CELLO MCP tools over Streamable HTTP, in front of your own local CELLO daemon, behind a bearer token and agent and tool allowlists.",
   "type": "module",
   "repository": "https://github.com/Mygentic-AI/cello-mcp-http",

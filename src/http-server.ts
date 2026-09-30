@@ -236,7 +236,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!(await authorized(req.headers["authorization"]))) {
-      log("mcp.http.auth.refused", { method: req.method, remote: req.socket.remoteAddress });
+      log("mcp.http.auth.refused", { method: req.method, path: new URL(req.url ?? "/", "http://x").pathname, bearer: req.headers["authorization"] !== undefined, remote: req.socket.remoteAddress });
       const challenge = resourceMetadataUrl === undefined ? "Bearer" : `Bearer resource_metadata="${resourceMetadataUrl}"`;
       const guidance = provider === undefined
         ? "Send the endpoint's bearer token as `Authorization: Bearer <token>`."
