@@ -232,9 +232,25 @@ describe("O4 tampering", () => {
     expect((await token(body)).status).toBe(400);
   });
 
-  it("a made-up access token is refused", async () => {
-    const r = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer made-up" }, body: "{}" });
-    expect(r.status).toBe(401);
+  const post = (bearer: string) => fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${bearer}` }, body: "{}" });
+
+  it("a made-up access token is refused, including while a real one is live", async () => {
+    expect((await post("made-up")).status).toBe(401);
+    await signIn();
+    expect((await post("made-up")).status).toBe(401);
+  });
+
+  it("a refresh token is not an access token", async () => {
+    const { refresh } = await signIn();
+    expect((await post(refresh)).status).toBe(401);
+  });
+
+  it("an expired access token is refused", async () => {
+    const { access } = await signIn();
+    const { updateState } = await import("../oauth-store.js");
+    await updateState(stateDir, (s) => { for (const t of s.tokens) if (t.kind === "access") t.expiresAt = Date.now() + 30; });
+    await new Promise((r) => setTimeout(r, 60));
+    expect((await post(access)).status).toBe(401);
   });
 });
 
