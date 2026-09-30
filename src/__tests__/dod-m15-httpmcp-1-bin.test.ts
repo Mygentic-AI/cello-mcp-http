@@ -107,3 +107,33 @@ describe("082 cello-mcp-http binary", () => {
     await c.close();
   });
 });
+
+describe("083 operator commands", () => {
+  it("pair prints a code that the endpoint's pairing check accepts once", async () => {
+    dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
+    const r = run(["pair"]);
+    expect(await r.exited).toBe(0);
+    const code = /Pairing code: ([A-Z0-9]{4}-[A-Z0-9]{4})/.exec(r.out())?.[1];
+    expect(code).toBeDefined();
+    const { consumePairingCode } = await import("../pairing.js");
+    expect((await consumePairingCode(join(dir, "mcp-http"), code!)).result).toBe("ok");
+    expect((await consumePairingCode(join(dir, "mcp-http"), code!)).result).toBe("no_code");
+  });
+
+  it("clients and revoke run against the state directory", async () => {
+    dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
+    const { updateState, loadState } = await import("../oauth-store.js");
+    const sd = join(dir, "mcp-http");
+    await updateState(sd, (s) => {
+      s.clients["c1"] = { client_id: "c1", client_name: "Claude", redirect_uris: ["https://x/cb"] } as never;
+      s.tokens.push({ hash: "h", kind: "access", clientId: "c1", scopes: [], expiresAt: Date.now() + 60_000 });
+    });
+    const list = run(["clients"]);
+    expect(await list.exited).toBe(0);
+    expect(list.out()).toContain("c1  Claude  signed in");
+    const rv = run(["revoke"]);
+    expect(await rv.exited).toBe(0);
+    expect(rv.out()).toContain("Revoked 1 token(s)");
+    expect((await loadState(sd)).tokens).toEqual([]);
+  });
+});

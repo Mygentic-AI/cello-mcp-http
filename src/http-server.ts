@@ -23,6 +23,9 @@ import { logEvent, type LogFn } from "@cello-protocol/connect/lib";
 import { McpHttpConfigError, isLoopbackHost } from "./http-config.js";
 import { ToolsFileError, collectToolNames, filteringSink, resolveAllowedTools } from "./tool-allowlist.js";
 import { AgentGuardError, guardProxy, makeNotificationPermit, resolvePermittedAgents } from "./agent-guard.js";
+import express from "express";
+import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { CelloOAuthProvider } from "./oauth-provider.js";
 
 const MCP_PATH = "/mcp";
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
@@ -38,6 +41,12 @@ export interface McpHttpOptions {
   /** Contents of the tools file. Undefined = every tool except DEFAULT_DENIED_TOOLS. */
   toolsFileText?: string;
   tls?: { cert: string; key: string };
+  /**
+   * OAuth for clients that can only be given a URL (the Claude app). `publicUrl` is the address clients
+   * use (e.g. the Tailscale Funnel URL), since behind a tunnel this process only sees 127.0.0.1. `stateDir`
+   * holds the pairing code and the hashed tokens. Undefined = static bearer token only.
+   */
+  oauth?: { publicUrl: string; stateDir: string };
   maxSessions?: number;
   idleTimeoutMs?: number;
   log?: LogFn;
@@ -59,9 +68,8 @@ interface Session {
 
 const digest = (s: string) => createHash("sha256").update(s).digest();
 
-function bearerOk(header: string | undefined, token: string): boolean {
-  if (header === undefined || !header.startsWith("Bearer ")) return false;
-  return timingSafeEqual(digest(header.slice("Bearer ".length)), digest(token));
+function bearerOf(header: string | undefined): string | undefined {
+  return header !== undefined && header.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
 }
 
 function send(res: ServerResponse, status: number, body: Record<string, unknown>, headers: Record<string, string> = {}): void {
@@ -116,6 +124,30 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
       throw new McpHttpConfigError("daemon_unreachable", `cannot reach the CELLO daemon at ${opts.socketPath} to check --agents: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       probe.close();
+    }
+  }
+
+  let provider: CelloOAuthProvider | undefined;
+  let resourceMetadataUrl: string | undefined;
+  let publicBase: URL | undefined;
+  if (opts.oauth !== undefined) {
+    publicBase = new URL(opts.oauth.publicUrl.replace(/\/+$/, "") + "/");
+    if (publicBase.pathname !== "/") throw new McpHttpConfigError("bad_public_url", `--public-url must be an origin with no path, like https://host.example; got ${opts.oauth.publicUrl}`);
+    provider = new CelloOAuthProvider(opts.oauth.stateDir, log);
+    resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(new URL(MCP_PATH, publicBase));
+  }
+
+  /** The static token, or (with OAuth on) a live access token issued by this endpoint. */
+  async function authorized(header: string | undefined): Promise<boolean> {
+    const presented = bearerOf(header);
+    if (presented === undefined) return false;
+    if (timingSafeEqual(digest(presented), digest(opts.token))) return true;
+    if (provider === undefined) return false;
+    try {
+      await provider.verifyAccessToken(presented);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -199,9 +231,13 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!bearerOk(req.headers["authorization"], opts.token)) {
+    if (!(await authorized(req.headers["authorization"]))) {
       log("mcp.http.auth.refused", { method: req.method, remote: req.socket.remoteAddress });
-      send(res, 401, { ok: false, reason: "unauthorized", guidance: "Send the endpoint's bearer token as `Authorization: Bearer <token>`." }, { "www-authenticate": "Bearer" });
+      const challenge = resourceMetadataUrl === undefined ? "Bearer" : `Bearer resource_metadata="${resourceMetadataUrl}"`;
+      const guidance = provider === undefined
+        ? "Send the endpoint's bearer token as `Authorization: Bearer <token>`."
+        : "Send the endpoint's bearer token, or sign in with OAuth (see the resource_metadata in WWW-Authenticate).";
+      send(res, 401, { ok: false, reason: "unauthorized", guidance }, { "www-authenticate": challenge });
       return;
     }
     if (new URL(req.url ?? "/", "http://x").pathname !== MCP_PATH) {
@@ -272,7 +308,23 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
       else res.end();
     });
   };
-  const httpServer: Server = opts.tls ? createHttps({ cert: opts.tls.cert, key: opts.tls.key }, listener) : createHttp(listener);
+  let root: (req: IncomingMessage, res: ServerResponse) => void = listener;
+  if (provider !== undefined && publicBase !== undefined) {
+    const app = express();
+    // Behind a local tunnel (Tailscale Funnel) the only proxy is on loopback; trust it for client addresses.
+    app.set("trust proxy", "loopback");
+    app.use(mcpAuthRouter({ provider, issuerUrl: publicBase, resourceServerUrl: new URL(MCP_PATH, publicBase), resourceName: "CELLO" }));
+    const p = provider;
+    app.post("/authorize/approve", express.urlencoded({ extended: false, limit: "4kb" }), (req, res) => {
+      p.approve(req, res).catch((err: unknown) => {
+        log("mcp.http.oauth.approve.failed", { error: err instanceof Error ? err.message : String(err) });
+        if (!res.headersSent) res.status(500).type("text").send("The endpoint failed handling this approval; see its log.");
+      });
+    });
+    app.use((req, res) => listener(req, res));
+    root = app;
+  }
+  const httpServer: Server = opts.tls ? createHttps({ cert: opts.tls.cert, key: opts.tls.key }, root) : createHttp(root);
 
   await new Promise<void>((resolve, reject) => {
     httpServer.once("error", reject);
@@ -287,6 +339,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     agents: permitted === "all" ? "all" : permitted.size,
     toolsAllowed: allowed.size,
     toolsExcluded: excluded.size,
+    oauth: publicBase?.origin ?? false,
   });
 
   return {

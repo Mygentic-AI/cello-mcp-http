@@ -12,6 +12,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { HTTP_USAGE, McpHttpConfigError, parseHttpArgs, readTokenFile } from "../http-config.js";
 import { startMcpHttpServer } from "../http-server.js";
+import { createPairingCode, PAIRING_TTL_MS } from "../pairing.js";
+import { listClients, revokeTokens } from "../oauth-store.js";
 import { logEvent } from "@cello-protocol/connect/lib";
 
 const pkg = createRequire(import.meta.url)("../../package.json") as { version: string };
@@ -19,6 +21,34 @@ const pkg = createRequire(import.meta.url)("../../package.json") as { version: s
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
   process.stdout.write(`${pkg.version}\n`);
   process.exit(0);
+}
+
+const celloDir = process.env["CELLO_DIR"] || join(homedir(), ".cello");
+const defaultStateDir = join(celloDir, "mcp-http");
+
+// Operator commands. They act on the state files directly, so they work whether or not the endpoint runs.
+const sub = process.argv[2];
+if (sub === "pair" || sub === "clients" || sub === "revoke") {
+  const stateAt = process.argv.indexOf("--state-dir");
+  const stateDir = stateAt !== -1 && process.argv[stateAt + 1] !== undefined ? process.argv[stateAt + 1]! : defaultStateDir;
+  try {
+    if (sub === "pair") {
+      const code = await createPairingCode(stateDir);
+      process.stdout.write(`Pairing code: ${code}\nType it into the sign-in page within ${PAIRING_TTL_MS / 60_000} minutes. It works once.\n`);
+    } else if (sub === "clients") {
+      const list = await listClients(stateDir);
+      if (list.length === 0) process.stdout.write("No apps have signed in.\n");
+      for (const c of list) process.stdout.write(`${c.clientId}  ${c.name ?? "(unnamed)"}  ${c.liveTokens > 0 ? "signed in" : "signed out"}\n`);
+    } else {
+      const target = process.argv.slice(3).find((a, i, all) => !a.startsWith("--") && all[i - 1] !== "--state-dir");
+      const n = await revokeTokens(stateDir, target);
+      process.stdout.write(`Revoked ${n} token(s)${target ? ` for ${target}` : ""}. ${target ? "That app" : "Every app"} must sign in again.\n`);
+    }
+    process.exit(0);
+  } catch (err: unknown) {
+    process.stderr.write(`cello-mcp-http ${sub}: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
 }
 
 try {
@@ -29,7 +59,6 @@ try {
   }
   const envToken = process.env["CELLO_MCP_HTTP_TOKEN"]?.trim() ?? "";
   const token = args.tokenFile !== undefined ? readTokenFile(args.tokenFile) : envToken;
-  const celloDir = process.env["CELLO_DIR"] || join(homedir(), ".cello");
 
   const handle = await startMcpHttpServer({
     socketPath: join(celloDir, "daemon.sock"),
@@ -42,6 +71,7 @@ try {
     tls: args.tlsCert !== undefined && args.tlsKey !== undefined
       ? { cert: readFileSync(args.tlsCert, "utf8"), key: readFileSync(args.tlsKey, "utf8") }
       : undefined,
+    oauth: args.publicUrl !== undefined ? { publicUrl: args.publicUrl, stateDir: args.stateDir ?? defaultStateDir } : undefined,
     maxSessions: args.maxSessions,
     idleTimeoutMs: args.idleTimeoutS * 1000,
   });

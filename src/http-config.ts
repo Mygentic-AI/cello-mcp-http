@@ -4,6 +4,7 @@ import { statSync, readFileSync } from "node:fs";
 
 export type McpHttpConfigReason =
   | "no_token"
+  | "bad_public_url"
   | "insecure_bind"
   | "tools_empty"
   | "unknown_tool"
@@ -52,6 +53,8 @@ export interface HttpArgs {
   toolsFile?: string;
   tlsCert?: string;
   tlsKey?: string;
+  publicUrl?: string;
+  stateDir?: string;
   maxSessions: number;
   idleTimeoutS: number;
   help: boolean;
@@ -69,8 +72,15 @@ export const HTTP_USAGE = `cello-mcp-http — the CELLO MCP tools over Streamabl
                           (default: every tool except cello_config_set, cello_settings_set,
                           cello_set_agent_offline, cello_contact_set_tier)
   --tls-cert <path> --tls-key <path>   serve HTTPS directly (otherwise front it with your own TLS)
+  --public-url <url>      turn on OAuth sign-in for clients that can only be given a URL (the Claude
+                          app); the public HTTPS origin clients use, e.g. your Tailscale Funnel URL
+  --state-dir <path>      where OAuth state and the pairing code live (default ~/.cello/mcp-http)
   --max-sessions <n>      concurrent MCP sessions (default 16)
   --idle-timeout-s <n>    close a session idle this long (default 900)
+
+  cello-mcp-http pair       print a one-time pairing code (10 minutes) to approve an OAuth sign-in
+  cello-mcp-http clients    list the apps signed in with OAuth
+  cello-mcp-http revoke [<client-id>]   cut off every signed-in app, or one
 `;
 
 export function parseHttpArgs(argv: readonly string[]): HttpArgs {
@@ -96,6 +106,8 @@ export function parseHttpArgs(argv: readonly string[]): HttpArgs {
       case "--tools-file": out.toolsFile = v(); break;
       case "--tls-cert": out.tlsCert = v(); break;
       case "--tls-key": out.tlsKey = v(); break;
+      case "--public-url": out.publicUrl = v(); break;
+      case "--state-dir": out.stateDir = v(); break;
       case "--max-sessions": out.maxSessions = positive(a, v()); break;
       case "--idle-timeout-s": out.idleTimeoutS = positive(a, v()); break;
       default: throw new McpHttpConfigError("bad_args", `unknown option ${a}`);
