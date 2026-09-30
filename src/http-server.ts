@@ -22,6 +22,7 @@ import { forwardDaemonNotifications } from "@cello-protocol/connect/lib";
 import { logEvent, type LogFn } from "@cello-protocol/connect/lib";
 import { McpHttpConfigError, isLoopbackHost } from "./http-config.js";
 import { ToolsFileError, collectToolNames, filteringSink, resolveAllowedTools } from "./tool-allowlist.js";
+import { SERVER_INSTRUCTIONS } from "./instructions.js";
 import { AgentGuardError, guardProxy, makeNotificationPermit, resolvePermittedAgents } from "./agent-guard.js";
 import express from "express";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -191,7 +192,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     const guarded = guardProxy(proxy, permitted, log, () => proxy.currentAgent);
     const server = new McpServer(
       { name: "cello", version: opts.version },
-      { capabilities: { experimental: { "claude/channel": {} } } },
+      { capabilities: { experimental: { "claude/channel": {} } }, instructions: SERVER_INSTRUCTIONS },
     );
     registerCelloTools(filteringSink(server, allowed), guarded);
     const permit = permitted === "all" ? undefined : makeNotificationPermit(proxy, permitted, log);
