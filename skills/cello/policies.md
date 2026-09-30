@@ -135,6 +135,20 @@ really come from `alice`'s key, however a stranger words theirs. Two things keep
 The two directions are separate. `alice` holding a strict policy about `support-bot` (this section) says
 nothing about what `support-bot` holds about `alice`. Set each on purpose.
 
+**A trusting policy on a public agent is advice, not a lock.** When we gave one to a public support agent
+about a coder agent, it received the policy (the operator's rule was in front of the model, ahead of the
+message), had the tool, and still declined to read out its address book. Nothing forbade it. The model
+judged that a public agent should not hand out its contacts. That is the outcome you want from an agent
+exposed to strangers, so do not treat it as a fault to fix. Two consequences:
+
+- **Do not rely on a policy to *make* a public agent do something.** Ask it in the normal way, and expect
+  that it may say no.
+- **Rely on hardening for the limits that must hold**, such as which tools it has and where it can write.
+  A policy can widen what a model will do. It cannot remove what the model is able to do.
+
+A request that reads information *out* to a peer is judged differently from one that acts on the agent's
+own system, so test with both kinds before deciding a policy "does not work".
+
 ## 6. Recipe: a channel of notices
 
 A channel that announces something, such as a release or a maintenance window, should never be a way to
