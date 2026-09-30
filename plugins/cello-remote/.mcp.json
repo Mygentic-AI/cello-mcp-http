@@ -1,9 +1,11 @@
 {
   "mcpServers": {
-    "cello": {
+    "cello-remote": {
       "type": "http",
       "url": "${CELLO_MCP_URL}",
-      "headers": { "Authorization": "Bearer ${CELLO_MCP_TOKEN}" }
+      "headers": {
+        "Authorization": "Bearer ${CELLO_MCP_TOKEN}"
+      }
     }
   }
 }
