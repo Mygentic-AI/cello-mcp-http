@@ -244,3 +244,26 @@ describe("M15D 002: 2026-07-28 requests (ChatGPT desktop's first request)", () =
     expect(res.headers.get("www-authenticate")).toMatch(/^Bearer/);
   });
 });
+
+describe("M15D 002: delivery on the 2026-07-28 path", () => {
+  it("a modern cello_receive is committed after the response is written, and the token is stripped", async () => {
+    fake.respond = (m) => (m === "cello_receive" ? { ok: true, count: 1, messages: [{ text: "hi" }], commit: "tok-modern" } : undefined);
+    await boot();
+    const meta = {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientInfo": { name: "openai-mcp", version: "1.0.0" },
+      "io.modelcontextprotocol/clientCapabilities": {},
+    };
+    const res = await fetch(handle!.url, {
+      method: "POST",
+      headers: { ...HEADERS, "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call", "mcp-name": "cello_receive" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "cello_receive", arguments: { cello_session_id: "s1", agent: "alice" }, _meta: meta } }),
+    });
+    expect(res.status).toBe(200);
+    const body = await rpcBody(res);
+    const text = ((body["result"] as { content: Array<{ text: string }> }).content[0]!).text;
+    expect(JSON.parse(text)).not.toHaveProperty("commit");
+    await sleep(200);
+    expect(fake.calls.filter((c) => c.method === "session.receive.commit").map((c) => c.params?.["token"])).toEqual(["tok-modern"]);
+  });
+});

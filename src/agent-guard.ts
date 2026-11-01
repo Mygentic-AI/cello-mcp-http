@@ -74,11 +74,22 @@ export async function resolvePermittedAgents(
 // create an agent it would also be allowed to serve.
 const NAME_KEYED_AGENT_METHODS = new Set(["cello_start_agent", "cello_set_agent_offline", "cello_use_agent", "cello_create_agent"]);
 
+/**
+ * Calls that act as an agent the daemon would otherwise pick itself (its sole-online fallback). On an
+ * endpoint serving several agents, an unnamed one could land on an agent outside the list, so it is
+ * refused and the model is told to name the agent.
+ */
+const ACTS_AS_AGENT = new Set([
+  "cello_send", "cello_receive", "cello_close_session", "cello_initiate_session", "cello_await_session",
+  "cello_get_transcript", "cello_list_sessions", "cello_check_notifications",
+]);
+
 export function guardProxy(
   inner: ToolProxy,
   permitted: ReadonlySet<string> | "all",
   log: LogFn = logEvent,
-  currentAgent: () => string | null = () => null,
+  /** The one agent's NAME when the endpoint serves exactly one: an unnamed call means that agent. */
+  pinned?: string,
 ): ToolProxy {
   if (permitted === "all") return inner as ToolProxy;
 
@@ -95,10 +106,16 @@ export function guardProxy(
   return {
     async call(method, params) {
       const key = NAME_KEYED_AGENT_METHODS.has(method) ? "name" : "agent";
+      if (key === "agent" && params?.["agent"] === undefined && ACTS_AS_AGENT.has(method)) {
+        if (pinned !== undefined) params = { ...(params ?? {}), agent: pinned };
+        else {
+          log("mcp.http.agent.refused", { method, agent: null });
+          return { ok: false, reason: "agent_required", guidance: "This endpoint serves several agents, so every call must name one with the agent parameter. Call cello_agents to see them." };
+        }
+      }
       const given = params?.[key];
       if (given !== undefined && typeof given !== "string") return refuse(String(given), method);
-      // With no agent named, the daemon acts as this connection's current agent — check that one.
-      const asked = typeof given === "string" ? given : currentAgent();
+      const asked = typeof given === "string" ? given : null;
       if (asked !== null) {
         try {
           const matches = (await roster(inner)).filter((a) => a.name === asked || a.pubkey === asked.toLowerCase());

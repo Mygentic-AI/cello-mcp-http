@@ -30,9 +30,6 @@ export interface RequestScope {
 
 export const requestScope = new AsyncLocalStorage<RequestScope>();
 
-/** Methods that act on an agent but are not addressed by `agent`. */
-const NO_AGENT_FILL = new Set(["ipc.connect", "cello_use_agent", "cello_stop_using_agent", "cello_create_agent", "cello_start_agent", "cello_set_agent_offline", "cello_list_agents", "cello_pair_start", "cello_register", "session.receive.commit"]);
-
 export async function openEndpointSocket(socketPath: string, caller: Caller): Promise<IpcProxy> {
   const proxy = new IpcProxy(socketPath, { clientType: "endpoint", caller });
   await proxy.connect();
@@ -40,8 +37,8 @@ export async function openEndpointSocket(socketPath: string, caller: Caller): Pr
   return proxy;
 }
 
-export function callProxy(opts: { socketPath: string; caller: Caller; pinnedAgent?: string; log: LogFn }): ToolProxy {
-  const { socketPath, caller, pinnedAgent, log } = opts;
+export function callProxy(opts: { socketPath: string; caller: Caller; log: LogFn }): ToolProxy {
+  const { socketPath, caller, log } = opts;
   return {
     async call(method: string, params?: Record<string, unknown>): Promise<unknown> {
       const scope = requestScope.getStore();
@@ -50,11 +47,7 @@ export function callProxy(opts: { socketPath: string; caller: Caller; pinnedAgen
       const hangUp = () => proxy.close();
       scope?.signal.addEventListener("abort", hangUp, { once: true });
       try {
-        // A pinned endpoint (`--agents <one>`) names its agent when the model did not.
-        const filled = pinnedAgent !== undefined && !NO_AGENT_FILL.has(method) && (params === undefined || params["agent"] === undefined)
-          ? { ...(params ?? {}), agent: pinnedAgent }
-          : params;
-        const result = (await proxy.call(method, filled)) as Record<string, unknown> | null;
+        const result = (await proxy.call(method, params)) as Record<string, unknown> | null;
         if (method === "cello_receive" && result !== null && typeof result === "object" && typeof result["commit"] === "string") {
           const { commit, ...rest } = result;
           if (scope && !scope.signal.aborted) scope.commits.push(commit as string);

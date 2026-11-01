@@ -107,12 +107,16 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
   const excluded = new Set(allNames.filter((n) => !allowed.has(n)));
 
   let permitted: ReadonlySet<string> | "all" = "all";
+  /** The agent's name when --agents names exactly one: unnamed calls and the stream mean that agent. */
+  let pinnedAgent: string | undefined;
   if (opts.agents !== undefined) {
     const probe = new IpcProxy(opts.socketPath, { clientType: "mcp" });
     try {
       await probe.connect();
       await probe.call("ipc.connect", { clientType: "mcp" });
-      permitted = (await resolvePermittedAgents(probe, opts.agents)).permitted;
+      const resolved = await resolvePermittedAgents(probe, opts.agents);
+      permitted = resolved.permitted;
+      if (resolved.names.length === 1) pinnedAgent = resolved.names[0];
     } catch (e) {
       if (e instanceof AgentGuardError) throw new McpHttpConfigError(e.reason, e.message);
       throw new McpHttpConfigError("daemon_unreachable", `cannot reach the CELLO daemon at ${opts.socketPath} to check --agents: ${e instanceof Error ? e.message : String(e)}`);
@@ -160,7 +164,6 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     if (!c) throw new Error("modern request reached the server factory without a verified caller");
     return c;
   };
-  const pinnedAgent = permitted !== "all" && permitted.size === 1 ? [...permitted][0] : undefined;
 
   /**
    * 2025-era (pre-2026-07-28) sessions. A session holds NO daemon socket of its own: each tool call
@@ -216,8 +219,8 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
       { name: "cello", version: opts.version },
       { capabilities: { experimental: { "claude/channel": {} } }, instructions: SERVER_INSTRUCTIONS },
     );
-    const calls = callProxy({ socketPath: opts.socketPath, caller, log, ...(pinnedAgent !== undefined ? { pinnedAgent } : {}) });
-    registerCelloTools(v2Sink(server, allowed), guardProxy(calls, permitted, log));
+    const calls = callProxy({ socketPath: opts.socketPath, caller, log });
+    registerCelloTools(v2Sink(server, allowed), guardProxy(calls, permitted, log, pinnedAgent));
     return server;
   }
 
@@ -268,6 +271,17 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     forwardDaemonNotifications(proxy, s.server as unknown as Parameters<typeof forwardDaemonNotifications>[1], permit);
     s.stream = proxy;
     log("mcp.http.stream.opened", { sessionId: s.id, attended: attended?.ok === true ? attended.agent : (attended?.reason ?? "no_answer") });
+    // A stream that cannot attend gets no doorbells. Say so on the stream itself, not only in our log.
+    if (attended?.ok !== true && attended?.reason !== "no_current_agent") {
+      const why = attended?.reason ?? "no answer from the daemon";
+      void (s.server as unknown as { server: { notification(n: unknown): Promise<void> } }).server.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: `CELLO — this connection will not be woken for new messages (${why}). Call cello_receive to check for messages, or cello_use_agent to take the agent.`,
+          meta: { type: "stream_unattended", reason: why },
+        },
+      }).catch(() => {});
+    }
     res.on("close", () => {
       if (s.stream === proxy) s.stream = undefined;
       proxy.close();

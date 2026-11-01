@@ -196,15 +196,19 @@ describe("082 agent guard", () => {
     }
   });
 
-  it("with no agent named, the connection's current agent is checked: an unpermitted current agent is refused", async () => {
+  it("with no agent named: a pinned endpoint fills its one agent; a multi-agent endpoint refuses agent_required", async () => {
     const { inner, calls } = recorder(R);
-    const bad = guardProxy(inner, new Set([A]), () => {}, () => "bob");
-    const out = (await bad.call("cello_send", { session_id: "s" })) as Record<string, unknown>;
-    expect(out["reason"]).toBe("agent_not_permitted");
-    expect(calls.map((c) => c.method)).not.toContain("cello_send");
-    const good = guardProxy(inner, new Set([A]), () => {}, () => "alice");
-    await good.call("cello_send", { session_id: "s" });
-    expect(calls.map((c) => c.method)).toContain("cello_send");
+    const pinned = guardProxy(inner, new Set([A]), () => {}, "alice");
+    await pinned.call("cello_send", { session_id: "s" });
+    expect(calls.filter((c) => c.method === "cello_send").map((c) => c.params?.["agent"])).toEqual(["alice"]);
+
+    const several = guardProxy(inner, new Set([A, B]), () => {});
+    const out = (await several.call("cello_receive", { session_id: "s" })) as Record<string, unknown>;
+    expect(out["reason"]).toBe("agent_required");
+    expect(calls.map((c) => c.method)).not.toContain("cello_receive");
+    // A call that names no agent and acts as none still runs.
+    await several.call("cello_status", {});
+    expect(calls.map((c) => c.method)).toContain("cello_status");
   });
 
   it("an `agent` that is not a string is refused, not forwarded", async () => {
