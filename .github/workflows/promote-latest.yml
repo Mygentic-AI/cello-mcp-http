@@ -1,0 +1,25 @@
+# Moves `latest` to a version CI already published to `beta`. Runs here because NPM_TOKEN lives in
+# Actions; laptop tokens expire silently. `version` must equal the current beta, so a run can only
+# promote what was published and checked.
+name: Promote to latest
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to promote (must equal the current beta)"
+        required: true
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Refuse anything but the current beta
+        run: |
+          beta=$(npm view @cello-protocol/mcp-http@beta version)
+          [ "$beta" = "${{ inputs.version }}" ] || { echo "beta is $beta, not ${{ inputs.version }}"; exit 1; }
+      - run: npm dist-tag add @cello-protocol/mcp-http@${{ inputs.version }} latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
