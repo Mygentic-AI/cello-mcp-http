@@ -184,12 +184,12 @@ describe("082 agent guard", () => {
     expect(guardProxy(inner, "all")).toBe(inner);
   });
 
-  it("a NAME-keyed agent tool is one of exactly the three the guard checks under `name`", () => {
+  it("a NAME-keyed agent tool is one of exactly the four the guard checks under `name`", () => {
     const shapes = new Map<string, string[]>();
     registerCelloTools({ tool: (n: string, _d: string, shape: Record<string, unknown>) => { shapes.set(n, Object.keys(shape)); } } as unknown as ToolSink, { call: async () => undefined });
     const withName = [...shapes].filter(([, keys]) => keys.includes("name")).map(([n]) => n).sort();
     // cello_channel_create's `name` is a channel name, not an agent; any NEW tool with `name` must be decided here.
-    expect(withName).toEqual(["cello_channel_create", "cello_set_agent_offline", "cello_start_agent", "cello_use_agent"]);
+    expect(withName).toEqual(["cello_channel_create", "cello_create_agent", "cello_set_agent_offline", "cello_start_agent", "cello_use_agent"]);
     for (const [n, keys] of shapes) {
       const agentish = keys.filter((k) => /agent/i.test(k) && k !== "agent");
       expect(agentish, `${n} names an agent under a key the guard does not check`).toEqual([]);

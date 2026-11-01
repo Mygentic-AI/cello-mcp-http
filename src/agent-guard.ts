@@ -70,7 +70,9 @@ export async function resolvePermittedAgents(
 }
 
 /** The daemon methods whose `name` param names an AGENT; every other tool carries an optional `agent`. */
-const NAME_KEYED_AGENT_METHODS = new Set(["cello_start_agent", "cello_set_agent_offline", "cello_use_agent"]);
+// cello_create_agent (M15D) names its new agent under `name`: an endpoint limited by --agents may only
+// create an agent it would also be allowed to serve.
+const NAME_KEYED_AGENT_METHODS = new Set(["cello_start_agent", "cello_set_agent_offline", "cello_use_agent", "cello_create_agent"]);
 
 export function guardProxy(
   inner: ToolProxy,
