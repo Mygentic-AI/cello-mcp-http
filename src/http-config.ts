@@ -79,7 +79,7 @@ export const HTTP_USAGE = `cello-mcp-http — the CELLO MCP tools over Streamabl
   --code-url <url>        where the operator gets a pairing code when they have no terminal (e.g. a
                           hosted agent's portal page); the sign-in page links there instead
   --max-sessions <n>      concurrent MCP sessions (default 16)
-  --idle-timeout-s <n>    close a session idle this long (default 900)
+  --idle-timeout-s <n>    close a session with no open stream and no call after this long (default 120)
 
   cello-mcp-http pair       print a one-time pairing code (10 minutes) to approve an OAuth sign-in
   cello-mcp-http clients    list the apps signed in with OAuth
@@ -87,7 +87,7 @@ export const HTTP_USAGE = `cello-mcp-http — the CELLO MCP tools over Streamabl
 `;
 
 export function parseHttpArgs(argv: readonly string[]): HttpArgs {
-  const out: HttpArgs = { port: NaN, host: "127.0.0.1", maxSessions: 16, idleTimeoutS: 900, help: false };
+  const out: HttpArgs = { port: NaN, host: "127.0.0.1", maxSessions: 16, idleTimeoutS: 120, help: false };
   const positive = (flag: string, v: string | undefined): number => {
     const n = Number(v);
     if (!Number.isInteger(n) || n < 0) throw new McpHttpConfigError("bad_args", `${flag} needs a whole number, got "${v ?? ""}"`);

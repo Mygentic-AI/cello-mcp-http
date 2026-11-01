@@ -8,13 +8,12 @@
 
 import { registerCelloTools, type ToolSink } from "@cello-protocol/connect/lib";
 
-/** Tools that change an agent's reachability or trust posture; an operator does these at a terminal. */
-export const DEFAULT_DENIED_TOOLS: readonly string[] = [
-  "cello_config_set",
-  "cello_settings_set",
-  "cello_set_agent_offline",
-  "cello_contact_set_tier",
-];
+/**
+ * Tools hidden when there is no tools file. Empty since M15D: a hosted user has no terminal, so a
+ * tool hidden "for the operator to run at a terminal" was a tool nobody could run. The mechanism
+ * stays for an operator who wants to narrow the surface with --tools-file.
+ */
+export const DEFAULT_DENIED_TOOLS: readonly string[] = [];
 
 export type ToolsFileReason = "unknown_tool" | "empty_set";
 
@@ -62,10 +61,18 @@ export function resolveAllowedTools(all: readonly string[], fileText: string | u
   return allowed;
 }
 
-/** A sink that forwards only allowed tools to the real server; the rest are never declared on it. */
-export function filteringSink(server: ToolSink, allowed: ReadonlySet<string>): ToolSink {
-  const forward = server.tool.bind(server) as (...args: unknown[]) => unknown;
-  return {
-    tool: ((name: string, ...rest: unknown[]) => (allowed.has(name) ? forward(name, ...rest) : undefined)) as unknown as ToolSink["tool"],
+type V2Server = { registerTool(name: string, config: { description?: string; inputSchema?: unknown }, cb: (args: Record<string, unknown>) => unknown): unknown };
+
+/**
+ * The shared tool list (`registerCelloTools`, written against the SDK v1 `tool()` call) declared on
+ * an SDK v2 server, allowed tools only — the rest are never declared on it. Adapted here, at this
+ * endpoint's boundary, so the plugin's registry is not forked.
+ */
+export function v2Sink(target: unknown, allowed: ReadonlySet<string>): ToolSink {
+  const server = target as V2Server;
+  const tool = (name: string, description: string, shape: Record<string, unknown>, cb: (args: Record<string, unknown>) => unknown) => {
+    if (!allowed.has(name)) return undefined;
+    return server.registerTool(name, { description, inputSchema: shape }, (args) => cb(args ?? {}));
   };
+  return { tool } as unknown as ToolSink;
 }

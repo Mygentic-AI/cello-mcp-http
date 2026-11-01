@@ -1,9 +1,11 @@
 /**
  * The CELLO MCP tools over Streamable HTTP, in front of the operator's OWN local daemon.
  *
- * An adapter, not a node: it holds a socket path and a bearer token, nothing else. Every MCP session
- * gets its own `McpServer` and its own `IpcProxy` because the daemon keeps the current agent per
- * connection. Two allowlists bound what a caller reaches — which tools are declared on the server
+ * An adapter, not a node: it holds a socket path and a bearer token, nothing else. Served on MCP SDK
+ * v2: 2026-07-28 requests are self-contained and get a fresh server each; 2025-era clients keep a
+ * session, but no daemon socket outlives a tool call unless the client holds the notification
+ * stream (M15D). Every daemon request carries the caller from the verified token, which is what the
+ * daemon's one-holder-per-agent rule keys on. Two allowlists bound what a caller reaches — which tools are declared on the server
  * (an excluded tool does not exist on it) and which agents a tool argument may name (checked here,
  * before the daemon is called). The allowlists constrain THIS endpoint; any local process that can
  * open the daemon socket is unaffected.
@@ -12,16 +14,12 @@
 import { createServer as createHttp, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createServer as createHttps } from "node:https";
 import { randomUUID, timingSafeEqual, createHash } from "node:crypto";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { IpcProxy } from "@cello-protocol/connect/lib";
-import { registerCelloTools } from "@cello-protocol/connect/lib";
-import { installDaemonGate } from "@cello-protocol/connect/lib";
-import { forwardDaemonNotifications } from "@cello-protocol/connect/lib";
-import { logEvent, type LogFn } from "@cello-protocol/connect/lib";
+import { McpServer as McpServerV2, createMcpHandler, isLegacyRequest, isInitializeRequest, type AuthInfo } from "@modelcontextprotocol/server";
+import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest } from "@modelcontextprotocol/node";
+import { IpcProxy, registerCelloTools, forwardDaemonNotifications, logEvent, type LogFn } from "@cello-protocol/connect/lib";
+import { callProxy, commitDeliveries, openEndpointSocket, requestScope, type Caller, type RequestScope } from "./call-proxy.js";
 import { McpHttpConfigError, isLoopbackHost } from "./http-config.js";
-import { ToolsFileError, collectToolNames, filteringSink, resolveAllowedTools } from "./tool-allowlist.js";
+import { ToolsFileError, collectToolNames, resolveAllowedTools, v2Sink } from "./tool-allowlist.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
 import { AgentGuardError, guardProxy, makeNotificationPermit, resolvePermittedAgents } from "./agent-guard.js";
 import express from "express";
@@ -30,6 +28,7 @@ import { CelloOAuthProvider } from "./oauth-provider.js";
 
 const MCP_PATH = "/mcp";
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
+const STATIC_CALLER: Caller = { id: "static", label: "static bearer" };
 
 export interface McpHttpOptions {
   socketPath: string;
@@ -49,7 +48,8 @@ export interface McpHttpOptions {
    */
   oauth?: { publicUrl: string; stateDir: string; codeUrl?: string };
   maxSessions?: number;
-  idleTimeoutMs?: number;
+  /** Close a 2025-era session with no open stream and no call in flight after this long (default 120 s). */
+  streamIdleMs?: number;
   log?: LogFn;
 }
 
@@ -59,13 +59,6 @@ export interface McpHttpHandle {
   close(): Promise<void>;
 }
 
-interface Session {
-  transport: StreamableHTTPServerTransport;
-  server: McpServer;
-  proxy: IpcProxy;
-  idle: NodeJS.Timeout | undefined;
-  closed: boolean;
-}
 
 const digest = (s: string) => createHash("sha256").update(s).digest();
 
@@ -92,7 +85,7 @@ async function readBody(req: IncomingMessage): Promise<string | "too_large"> {
 export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpHandle> {
   const log: LogFn = opts.log ?? logEvent;
   const maxSessions = opts.maxSessions ?? 16;
-  const idleTimeoutMs = opts.idleTimeoutMs ?? 900_000;
+  const streamIdleMs = opts.streamIdleMs ?? 120_000;
 
   if (opts.token === "") {
     throw new McpHttpConfigError("no_token", "no bearer token configured; pass --token-file or set CELLO_MCP_HTTP_TOKEN. An endpoint with no token would be open to anyone who can reach it.");
@@ -141,101 +134,153 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
   }
 
   /** The static token, or (with OAuth on) a live access token issued by this endpoint. */
-  async function authorized(header: string | undefined): Promise<boolean> {
+  /**
+   * Who is calling, from the verified token and nothing else: `oauth:<clientId>` with the registered
+   * client's name as the label, or `static` for the endpoint's own bearer. Null when unverified.
+   */
+  async function authorized(header: string | undefined): Promise<Caller | null> {
     const presented = bearerOf(header);
-    if (presented === undefined) return false;
-    if (timingSafeEqual(digest(presented), digest(opts.token))) return true;
-    if (provider === undefined) return false;
+    if (presented === undefined) return null;
+    if (timingSafeEqual(digest(presented), digest(opts.token))) return STATIC_CALLER;
+    if (provider === undefined) return null;
     try {
       const info = await provider.verifyAccessToken(presented);
       // A token minted for another resource is not a token for this one.
-      return info.resource === undefined || info.resource.href === new URL(MCP_PATH, publicBase).href;
+      if (info.resource !== undefined && info.resource.href !== new URL(MCP_PATH, publicBase).href) return null;
+      const client = await provider.clientsStore.getClient(info.clientId);
+      return { id: `oauth:${info.clientId}`, label: client?.client_name ?? info.clientId };
     } catch {
-      return false;
+      return null;
     }
   }
+  // The modern handler hands the factory the AuthInfo we set on the request; the caller rides in it.
+  const authInfoOf = (caller: Caller): AuthInfo => ({ token: "verified", clientId: caller.id, scopes: [], extra: { caller } });
+  const callerOf = (info: AuthInfo | undefined): Caller => {
+    const c = info?.extra?.["caller"] as Caller | undefined;
+    if (!c) throw new Error("modern request reached the server factory without a verified caller");
+    return c;
+  };
+  const pinnedAgent = permitted !== "all" && permitted.size === 1 ? [...permitted][0] : undefined;
 
-  const sessions = new Map<string, Session>();
+  /**
+   * 2025-era (pre-2026-07-28) sessions. A session holds NO daemon socket of its own: each tool call
+   * opens one and closes it (`call-proxy.ts`). Only a client that opens the GET notification stream
+   * gets a socket for the stream's life — Claude Code, Codex, Hermes — so doorbells still reach it.
+   * A session with no stream and no call in flight is closed after `streamIdleMs`; when the table is
+   * full the oldest idle session is evicted instead of the new one refused.
+   */
+  interface LegacySession {
+    id: string | undefined;
+    transport: NodeStreamableHTTPServerTransport;
+    server: McpServerV2;
+    caller: Caller;
+    lastUsed: number;
+    inFlight: number;
+    stream: IpcProxy | undefined;
+    closed: boolean;
+  }
+  const sessions = new Map<string, LegacySession>();
   let starting = 0;
 
-  const closeSession = (id: string | undefined, s: Session): void => {
+  const closeSession = (s: LegacySession, why: string): void => {
     if (s.closed) return;
     s.closed = true;
-    if (s.idle) clearTimeout(s.idle);
-    if (id !== undefined) sessions.delete(id);
-    s.proxy.close();
-    s.server.close().catch((e: unknown) => log("mcp.http.session.close_failed", { sessionId: id, error: e instanceof Error ? e.message : String(e) }));
-    log("mcp.http.session.closed", { sessionId: id });
+    if (s.id !== undefined) sessions.delete(s.id);
+    s.stream?.close();
+    s.stream = undefined;
+    void s.transport.close().catch(() => {});
+    s.server.close().catch((e: unknown) => log("mcp.http.session.close_failed", { sessionId: s.id, error: e instanceof Error ? e.message : String(e) }));
+    log("mcp.http.session.closed", { sessionId: s.id, why });
   };
 
-  const touch = (id: string, s: Session): void => {
-    if (s.idle) clearTimeout(s.idle);
-    s.idle = setTimeout(() => {
-      log("mcp.http.session.idle_closed", { sessionId: id, idleTimeoutMs });
-      void s.transport.close();
-    }, idleTimeoutMs);
-    s.idle.unref();
-  };
+  const idle = (s: LegacySession): boolean => s.stream === undefined && s.inFlight === 0;
+  const sweeper = setInterval(() => {
+    const now = Date.now();
+    for (const s of [...sessions.values()]) if (idle(s) && now - s.lastUsed > streamIdleMs) closeSession(s, "idle");
+  }, Math.max(50, Math.min(30_000, Math.floor(streamIdleMs / 2))));
+  sweeper.unref();
 
-  async function newSession(): Promise<Session> {
-    const proxy = new IpcProxy(opts.socketPath, { clientType: "mcp" });
-    try {
-      return await buildSession(proxy);
-    } catch (e) {
-      proxy.close();
-      throw e;
-    }
+  /** Make room for one more session, or say there is none (every session has a call or a stream). */
+  function makeRoom(): boolean {
+    if (sessions.size + starting < maxSessions) return true;
+    const oldest = [...sessions.values()].filter(idle).sort((a, b) => a.lastUsed - b.lastUsed)[0];
+    if (!oldest) return false;
+    log("mcp.http.session.evicted", { sessionId: oldest.id, idleMs: Date.now() - oldest.lastUsed });
+    closeSession(oldest, "evicted");
+    return true;
   }
 
-  async function buildSession(proxy: IpcProxy): Promise<Session> {
-    await installDaemonGate(proxy, "cello-mcp-http");
-    const guarded = guardProxy(proxy, permitted, log, () => proxy.currentAgent);
-    const server = new McpServer(
+  /** One server, for one caller: the same tool list either era serves. */
+  function buildServer(caller: Caller): McpServerV2 {
+    const server = new McpServerV2(
       { name: "cello", version: opts.version },
       { capabilities: { experimental: { "claude/channel": {} } }, instructions: SERVER_INSTRUCTIONS },
     );
-    registerCelloTools(filteringSink(server, allowed), guarded);
-    const permit = permitted === "all" ? undefined : makeNotificationPermit(proxy, permitted, log);
-    forwardDaemonNotifications(proxy, server, permit);
-
-    let id: string | undefined;
-    const session: Session = { transport: undefined as unknown as StreamableHTTPServerTransport, server, proxy, idle: undefined, closed: false };
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (sid) => {
-        id = sid;
-        sessions.set(sid, session);
-        touch(sid, session);
-        log("mcp.http.session.opened", { sessionId: sid, sessions: sessions.size });
-      },
-    });
-    session.transport = transport;
-    transport.onclose = () => closeSession(id, session);
-    await server.connect(transport);
-
-    const inner = transport.onmessage;
-    transport.onmessage = (msg, extra) => {
-      const m = msg as { id?: string | number; method?: string; params?: { name?: unknown } };
-      if (m.method === "tools/call" && m.id !== undefined && typeof m.params?.name === "string" && excluded.has(m.params.name)) {
-        log("mcp.http.tool.refused", { tool: m.params.name, sessionId: id });
-        const refusal = {
-          ok: false,
-          reason: "tool_not_permitted",
-          guidance: `${m.params.name} is not exposed by this endpoint; its operator excluded it at startup and it cannot be enabled from here. Use one of the tools listed by tools/list.`,
-        };
-        void transport.send(
-          { jsonrpc: "2.0", id: m.id, result: { isError: true, content: [{ type: "text", text: JSON.stringify(refusal) }] } },
-          { relatedRequestId: m.id },
-        );
-        return;
-      }
-      inner?.(msg, extra);
-    };
-    return session;
+    const calls = callProxy({ socketPath: opts.socketPath, caller, log, ...(pinnedAgent !== undefined ? { pinnedAgent } : {}) });
+    registerCelloTools(v2Sink(server, allowed), guardProxy(calls, permitted, log));
+    return server;
   }
 
+  async function newLegacySession(caller: Caller): Promise<LegacySession> {
+    const server = buildServer(caller);
+    const s: LegacySession = {
+      id: undefined, transport: undefined as unknown as NodeStreamableHTTPServerTransport, server, caller,
+      lastUsed: Date.now(), inFlight: 0, stream: undefined, closed: false,
+    };
+    s.transport = new NodeStreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (sid: string) => {
+        s.id = sid;
+        sessions.set(sid, s);
+        log("mcp.http.session.opened", { sessionId: sid, sessions: sessions.size, caller: caller.label });
+      },
+    });
+    s.transport.onclose = () => closeSession(s, "transport_closed");
+    await server.connect(s.transport);
+    return s;
+  }
+
+  /** The GET stream: one daemon socket for its life, attended so doorbells route here (contract C5). */
+  async function openStream(s: LegacySession, res: ServerResponse): Promise<void> {
+    const proxy = await openEndpointSocket(opts.socketPath, s.caller);
+    const attended = (await proxy.call("agent.attend", pinnedAgent !== undefined ? { agent: pinnedAgent } : {})) as { ok?: boolean; reason?: string; agent?: string } | null;
+    const permit = permitted === "all" ? undefined : makeNotificationPermit(proxy, permitted, log);
+    forwardDaemonNotifications(proxy, s.server as unknown as Parameters<typeof forwardDaemonNotifications>[1], permit);
+    s.stream = proxy;
+    log("mcp.http.stream.opened", { sessionId: s.id, attended: attended?.ok === true ? attended.agent : (attended?.reason ?? "no_answer") });
+    res.on("close", () => {
+      if (s.stream === proxy) s.stream = undefined;
+      proxy.close();
+      s.lastUsed = Date.now();
+      log("mcp.http.stream.closed", { sessionId: s.id });
+    });
+  }
+
+  /** Run one HTTP exchange in its own request scope: hang-up aborts it, a written response commits. */
+  async function inScope(caller: Caller, res: ServerResponse, record: Record<string, unknown>, run: () => Promise<void>): Promise<void> {
+    const started = Date.now();
+    const ac = new AbortController();
+    const scope: RequestScope = { signal: ac.signal, commits: [] };
+    let finished = false;
+    res.on("finish", () => {
+      finished = true;
+      void commitDeliveries(opts.socketPath, caller, scope.commits, log);
+    });
+    res.on("close", () => {
+      if (!finished) ac.abort();
+      log("mcp.http.request", {
+        ts: new Date(started).toISOString(), ...record, caller_label: caller.label,
+        ms: Date.now() - started, outcome: finished ? `http_${res.statusCode}` : "client_gone",
+      });
+    });
+    await requestScope.run(scope, run);
+  }
+
+  const modern = toNodeHandler(createMcpHandler((ctx) => buildServer(callerOf(ctx.authInfo)), { legacy: "reject" }));
+
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!(await authorized(req.headers["authorization"]))) {
+    const caller = await authorized(req.headers["authorization"]);
+    if (caller === null) {
       log("mcp.http.auth.refused", { method: req.method, path: new URL(req.url ?? "/", "http://x").pathname, bearer: req.headers["authorization"] !== undefined, remote: req.socket.remoteAddress });
       const challenge = resourceMetadataUrl === undefined ? "Bearer" : `Bearer resource_metadata="${resourceMetadataUrl}"`;
       const guidance = provider === undefined
@@ -248,58 +293,79 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
       send(res, 404, { ok: false, reason: "not_found", guidance: `The MCP endpoint is ${MCP_PATH}.` });
       return;
     }
-    const sid = req.headers["mcp-session-id"];
-    const sessionId = Array.isArray(sid) ? sid[0] : sid;
 
+    let parsed: unknown;
     if (req.method === "POST") {
       const raw = await readBody(req);
       if (raw === "too_large") {
         send(res, 413, { ok: false, reason: "body_too_large", guidance: `Request bodies are limited to ${MAX_BODY_BYTES} bytes.` });
         return;
       }
-      let parsed: unknown;
       try {
         parsed = JSON.parse(raw);
       } catch {
         send(res, 400, { ok: false, reason: "bad_json", guidance: "The request body is not valid JSON." });
         return;
       }
-      if (sessionId !== undefined) {
-        const s = sessions.get(sessionId);
-        if (!s) {
-          send(res, 404, { ok: false, reason: "unknown_session", guidance: "That MCP session has ended or never existed; send a new initialize request." });
+    }
+    const rpc = parsed as { method?: string; params?: { name?: unknown } } | undefined;
+    const record = { method: rpc?.method ?? req.method, ...(rpc?.method === "tools/call" && typeof rpc.params?.name === "string" ? { tool: rpc.params.name } : {}) };
+
+    // 2026-07-28: every request is self-contained. Served by a fresh server per request.
+    if (!(await isLegacyRequest(await toWebRequest(req, parsed), parsed))) {
+      (req as IncomingMessage & { auth?: AuthInfo }).auth = authInfoOf(caller);
+      await inScope(caller, res, { era: "modern", kind: "stateless", ...record }, () => modern(req, res, parsed));
+      return;
+    }
+
+    const sid = req.headers["mcp-session-id"];
+    const sessionId = Array.isArray(sid) ? sid[0] : sid;
+    const known = sessionId === undefined ? undefined : sessions.get(sessionId);
+    if (sessionId !== undefined && (!known || known.caller.id !== caller.id)) {
+      // Unknown, expired, or someone else's: the client re-initialises.
+      send(res, 404, { ok: false, reason: "unknown_session", guidance: "That MCP session has ended or never existed; send a new initialize request." });
+      return;
+    }
+
+    if (req.method === "POST") {
+      let s = known;
+      if (!s) {
+        if (!isInitializeRequest(parsed)) {
+          send(res, 400, { ok: false, reason: "no_session", guidance: "Start with an initialize request; later requests carry the Mcp-Session-Id it returns." });
           return;
         }
-        touch(sessionId, s);
-        await s.transport.handleRequest(req, res, parsed);
-        return;
+        if (!makeRoom()) {
+          send(res, 503, { ok: false, reason: "too_many_sessions", guidance: `All ${maxSessions} sessions of this endpoint are busy (each has a call or a stream open); retry shortly.` });
+          return;
+        }
+        starting++;
+        try {
+          s = await newLegacySession(caller);
+        } finally {
+          starting--;
+        }
       }
-      if (!isInitializeRequest(parsed)) {
-        send(res, 400, { ok: false, reason: "no_session", guidance: "Start with an initialize request; later requests carry the Mcp-Session-Id it returns." });
-        return;
-      }
-      if (sessions.size + starting >= maxSessions) {
-        send(res, 503, { ok: false, reason: "too_many_sessions", guidance: `This endpoint allows ${maxSessions} concurrent sessions; close one or retry later.` });
-        return;
-      }
-      starting++;
-      try {
-        const s = await newSession();
-        await s.transport.handleRequest(req, res, parsed);
-      } finally {
-        starting--;
-      }
+      const session = s;
+      session.inFlight++;
+      session.lastUsed = Date.now();
+      res.on("close", () => { session.inFlight--; session.lastUsed = Date.now(); });
+      await inScope(caller, res, { era: "legacy", kind: session.stream ? "stream" : "stateless", ...record }, () => session.transport.handleRequest(req, res, parsed));
       return;
     }
 
     if (req.method === "GET" || req.method === "DELETE") {
-      const s = sessionId === undefined ? undefined : sessions.get(sessionId);
-      if (!s || sessionId === undefined) {
-        send(res, sessionId === undefined ? 400 : 404, { ok: false, reason: "no_session", guidance: "Send the Mcp-Session-Id returned by initialize." });
+      if (!known) {
+        send(res, 400, { ok: false, reason: "no_session", guidance: "Send the Mcp-Session-Id returned by initialize." });
         return;
       }
-      touch(sessionId, s);
-      await s.transport.handleRequest(req, res);
+      known.lastUsed = Date.now();
+      if (req.method === "GET") {
+        await openStream(known, res);
+        await known.transport.handleRequest(req, res);
+        return;
+      }
+      await known.transport.handleRequest(req, res);
+      closeSession(known, "deleted");
       return;
     }
     send(res, 405, { ok: false, reason: "method_not_allowed", guidance: "Use POST, GET or DELETE." }, { allow: "POST, GET, DELETE" });
@@ -350,7 +416,8 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     url,
     port,
     async close() {
-      for (const [id, s] of [...sessions]) closeSession(id, s);
+      clearInterval(sweeper);
+      for (const s of [...sessions.values()]) closeSession(s, "shutdown");
       httpServer.closeAllConnections();
       await new Promise<void>((r) => httpServer.close(() => r()));
     },

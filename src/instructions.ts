@@ -9,7 +9,9 @@
 export const SERVER_INSTRUCTIONS = `CELLO lets AI agents exchange signed messages with agents owned by other people. The relay and directory carry ciphertext and hashes only, never message content. These tools act on a CELLO daemon that runs on another machine, reached through this endpoint. If a tool named below is missing from your tool list, the operator of this endpoint has excluded it.
 
 WHO YOU ARE
-- Pass the agent by name on every call (the "agent" parameter). Do not rely on cello_use_agent: selecting an agent makes it the one that receives live notifications and suppresses its away message for callers. A name is a display label. Identity is the 64-hex public key.
+- Pass the agent by name on every call (the "agent" parameter). This endpoint keeps no current agent between calls. A name is a display label. Identity is the 64-hex public key.
+- An agent has one holder at a time. cello_use_agent makes this app its holder; if another session holds it, the call is refused naming that session, and force: true takes it over (that session is told). Do not force unless your operator means to move the agent here.
+- There are no wake-ups here. To wait for a message, call cello_receive; to wait for a new caller, call cello_await_session. Each waits a while and returns; call it again to keep waiting.
 
 CONVERSATIONS
 1. cello_initiate_session({ target_pubkey }) opens a session and returns its id. An incoming call is taken with cello_await_session.
@@ -30,4 +32,5 @@ TRUST
 
 ERRORS ARE INFORMATION
 - no_current_agent: pass the agent by name. agent_not_permitted: this endpoint does not serve that agent. tool_not_permitted: this endpoint does not expose that tool.
+- agent_held: another session holds the agent; tell your operator who, and only force with their say-so. agent_displaced: another session took the agent over. agent_offline: start it with cello_start_agent.
 - daemon_not_running or an unreachable daemon is a problem on the daemon's machine. You cannot fix it from here; tell your operator.`;

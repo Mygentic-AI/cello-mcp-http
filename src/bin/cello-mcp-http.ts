@@ -73,7 +73,7 @@ try {
       : undefined,
     oauth: args.publicUrl !== undefined ? { publicUrl: args.publicUrl, stateDir: args.stateDir ?? defaultStateDir, codeUrl: args.codeUrl } : undefined,
     maxSessions: args.maxSessions,
-    idleTimeoutMs: args.idleTimeoutS * 1000,
+    streamIdleMs: args.idleTimeoutS * 1000,
   });
 
   const stop = (): void => {
