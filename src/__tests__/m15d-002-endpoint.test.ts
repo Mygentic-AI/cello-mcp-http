@@ -208,3 +208,39 @@ describe("M15D 002: stream sessions keep notifications", () => {
     expect(events.some((e) => e.event === "mcp.http.session.evicted")).toBe(true);
   });
 });
+
+describe("M15D 002: 2026-07-28 requests (ChatGPT desktop's first request)", () => {
+  it("DoD 2 — a 2026-07-28 request is answered 200, statelessly, and reaches the daemon with the caller", async () => {
+    await boot();
+    const meta = {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientInfo": { name: "openai-mcp", version: "1.0.0" },
+      "io.modelcontextprotocol/clientCapabilities": {},
+    };
+    const res = await fetch(handle!.url, {
+      method: "POST",
+      headers: { ...HEADERS, "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call", "mcp-name": "cello_status" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "cello_status", arguments: {}, _meta: meta } }),
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(res.headers.get("mcp-session-id"), "no session in this era").toBeNull();
+    const body = await rpcBody(res);
+    expect(body["error"], JSON.stringify(body)).toBeUndefined();
+    await sleep(50);
+    expect(events.some((e) => e.event === "mcp.http.request" && e.ctx["era"] === "modern" && e.ctx["tool"] === "cello_status" && e.ctx["outcome"] === "http_200"),
+      `request log: ${JSON.stringify(events.filter((e) => e.event === "mcp.http.request").map((e) => e.ctx))}`).toBe(true);
+    expect(fake.calls.filter((c) => c.method === "cello_status").map((c) => c.caller)).toEqual([{ id: "static", label: "static bearer" }]);
+    expect(fake.openNow()).toBe(0);
+  });
+
+  it("a 2026-07-28 request without a token is refused 401 with the challenge, like any other", async () => {
+    await boot();
+    const res = await fetch(handle!.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2026-07-28" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } } }),
+    });
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toMatch(/^Bearer/);
+  });
+});
