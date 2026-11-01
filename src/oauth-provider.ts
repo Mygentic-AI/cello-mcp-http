@@ -49,7 +49,11 @@ export class CelloOAuthProvider implements OAuthServerProvider {
   /** Requests already approved, so a second submit of the same form (a double click, a browser resend) is not reported as expired. */
   private readonly approved = new Map<string, number>();
 
-  constructor(private readonly stateDir: string, private readonly log: LogFn) {}
+  /**
+   * `codeUrl` is where the operator gets a code when they have no terminal (a hosted agent: its owner's
+   * portal page). Unset, the page tells them to run `cello-mcp-http pair` on the machine.
+   */
+  constructor(private readonly stateDir: string, private readonly log: LogFn, private readonly codeUrl?: string) {}
 
   get clientsStore(): OAuthRegisteredClientsStore {
     const stateDir = this.stateDir;
@@ -94,8 +98,10 @@ export class CelloOAuthProvider implements OAuthServerProvider {
 <h1>Connect ${esc(name)} to your CELLO agents?</h1>
 <p><strong>${esc(name)}</strong> is asking to use this CELLO endpoint. It will reach only the agents and tools
 this endpoint's operator allowed.</p>
-<p>To approve, run this on the machine where CELLO runs, and type the code it prints:</p>
-<p><code>cello-mcp-http pair</code></p>
+${this.codeUrl
+  ? `<p>To approve, get a connect code from <a href="${esc(this.codeUrl)}" target="_blank" rel="noopener">your CELLO portal</a> and type it below.</p>`
+  : `<p>To approve, run this on the machine where CELLO runs, and type the code it prints:</p>
+<p><code>cello-mcp-http pair</code></p>`}
 ${error ? `<p class="err">${esc(error)}</p>` : ""}
 <form method="post" action="/authorize/approve">
 <input type="hidden" name="request" value="${esc(id)}">
@@ -124,7 +130,9 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
     if (result !== "ok") {
       this.log("mcp.http.oauth.pairing.refused", { clientId: p.client.client_id, result, attemptsLeft });
       // One message for every failure, so the page does not tell a guesser when a code is live.
-      const why = "That code did not work. Run cello-mcp-http pair for a fresh code and try again.";
+      const why = this.codeUrl
+        ? "That code did not work. Get a new code from your CELLO portal and try again. Only the newest code works."
+        : "That code did not work. Run cello-mcp-http pair for a fresh code and try again.";
       res.status(401).type("html").send(this.consentPage(id, p.client, why));
       return;
     }

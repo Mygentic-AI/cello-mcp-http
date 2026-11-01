@@ -304,3 +304,24 @@ describe("O7 at rest", () => {
     expect((await stat(join(stateDir, "oauth.json"))).mode & 0o777).toBe(0o600);
   });
 });
+
+describe("hosted: the sign-in page points at where the operator gets a code", () => {
+  it("with --code-url, the page links there and never tells a hosted owner to run a terminal command", async () => {
+    await handle?.close();
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    handle = await startMcpHttpServer({
+      socketPath: fake.path, host: "127.0.0.1", port, token: STATIC, version: "0.0.0-test",
+      toolsFileText: "cello_agents\ncello_inbox\n",
+      oauth: { publicUrl: base, stateDir, codeUrl: "https://portal.example/hosted" },
+      log: () => {},
+    });
+    const { client_id } = await register();
+    const { request, html } = await openAuthorize(client_id);
+    expect(html).toContain('href="https://portal.example/hosted"');
+    expect(html).not.toContain("cello-mcp-http pair");
+    const wrong = await (await approve(request, "WRONG-CODE")).text();
+    expect(wrong).toContain('href="https://portal.example/hosted"');
+    expect(wrong).not.toContain("cello-mcp-http pair");
+  });
+});

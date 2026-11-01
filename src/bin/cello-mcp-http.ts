@@ -71,7 +71,7 @@ try {
     tls: args.tlsCert !== undefined && args.tlsKey !== undefined
       ? { cert: readFileSync(args.tlsCert, "utf8"), key: readFileSync(args.tlsKey, "utf8") }
       : undefined,
-    oauth: args.publicUrl !== undefined ? { publicUrl: args.publicUrl, stateDir: args.stateDir ?? defaultStateDir } : undefined,
+    oauth: args.publicUrl !== undefined ? { publicUrl: args.publicUrl, stateDir: args.stateDir ?? defaultStateDir, codeUrl: args.codeUrl } : undefined,
     maxSessions: args.maxSessions,
     idleTimeoutMs: args.idleTimeoutS * 1000,
   });

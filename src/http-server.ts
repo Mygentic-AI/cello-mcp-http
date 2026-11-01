@@ -47,7 +47,7 @@ export interface McpHttpOptions {
    * use (e.g. the Tailscale Funnel URL), since behind a tunnel this process only sees 127.0.0.1. `stateDir`
    * holds the pairing code and the hashed tokens. Undefined = static bearer token only.
    */
-  oauth?: { publicUrl: string; stateDir: string };
+  oauth?: { publicUrl: string; stateDir: string; codeUrl?: string };
   maxSessions?: number;
   idleTimeoutMs?: number;
   log?: LogFn;
@@ -136,7 +136,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     if (publicBase.pathname !== "/") throw new McpHttpConfigError("bad_public_url", `--public-url must be an origin with no path, like https://host.example; got ${opts.oauth.publicUrl}`);
     const loopback = publicBase.hostname === "localhost" || publicBase.hostname === "127.0.0.1";
     if (publicBase.protocol !== "https:" && !loopback) throw new McpHttpConfigError("bad_public_url", `--public-url must be https (tokens travel on it); got ${opts.oauth.publicUrl}`);
-    provider = new CelloOAuthProvider(opts.oauth.stateDir, log);
+    provider = new CelloOAuthProvider(opts.oauth.stateDir, log, opts.oauth.codeUrl);
     resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(new URL(MCP_PATH, publicBase));
   }
 

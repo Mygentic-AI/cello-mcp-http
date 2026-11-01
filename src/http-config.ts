@@ -55,6 +55,7 @@ export interface HttpArgs {
   tlsKey?: string;
   publicUrl?: string;
   stateDir?: string;
+  codeUrl?: string;
   maxSessions: number;
   idleTimeoutS: number;
   help: boolean;
@@ -75,6 +76,8 @@ export const HTTP_USAGE = `cello-mcp-http — the CELLO MCP tools over Streamabl
   --public-url <url>      turn on OAuth sign-in for clients that can only be given a URL (the Claude
                           app); the public HTTPS origin clients use, e.g. your Tailscale Funnel URL
   --state-dir <path>      where OAuth state and the pairing code live (default ~/.cello/mcp-http)
+  --code-url <url>        where the operator gets a pairing code when they have no terminal (e.g. a
+                          hosted agent's portal page); the sign-in page links there instead
   --max-sessions <n>      concurrent MCP sessions (default 16)
   --idle-timeout-s <n>    close a session idle this long (default 900)
 
@@ -108,6 +111,7 @@ export function parseHttpArgs(argv: readonly string[]): HttpArgs {
       case "--tls-key": out.tlsKey = v(); break;
       case "--public-url": out.publicUrl = v(); break;
       case "--state-dir": out.stateDir = v(); break;
+      case "--code-url": out.codeUrl = v(); break;
       case "--max-sessions": out.maxSessions = positive(a, v()); break;
       case "--idle-timeout-s": out.idleTimeoutS = positive(a, v()); break;
       default: throw new McpHttpConfigError("bad_args", `unknown option ${a}`);
