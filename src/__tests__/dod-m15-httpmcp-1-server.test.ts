@@ -72,7 +72,13 @@ async function setup() {
 }
 
 type Snap = Array<{ name: string; description?: string; inputSchema: unknown }>;
-const norm = (t: Snap) => t.map((x) => ({ name: x.name, description: x.description, inputSchema: x.inputSchema })).sort((a, b) => a.name.localeCompare(b.name));
+// SDK v2 labels schemas with the 2020-12 dialect where v1 said draft-07; the schema itself must match.
+const dropDialect = (schema: unknown) => {
+  if (schema === null || typeof schema !== "object") return schema;
+  const { $schema: _dialect, ...rest } = schema as Record<string, unknown>;
+  return rest;
+};
+const norm = (t: Snap) => t.map((x) => ({ name: x.name, description: x.description, inputSchema: dropDialect(x.inputSchema) })).sort((a, b) => a.name.localeCompare(b.name));
 
 // The stdio shim's tools/list, built the way bin/cello-mcp.ts builds it: connect's own registry on a
 // real McpServer. Read live from the installed connect, so a connect upgrade cannot leave a stale copy.
@@ -207,8 +213,8 @@ describe("082 agents allowlist over the wire", () => {
   });
 });
 
-describe("082 sessions", () => {
-  it("each MCP session gets its own daemon connection, released on close", async () => {
+describe("082 sessions (M15D: no daemon socket outlives a call unless the client holds the stream)", () => {
+  it("each tool call gets its own daemon connection, released when the call returns", async () => {
     await setup(); await boot();
     const c1 = await connect(); const c2 = await connect();
     await c1.callTool({ name: "cello_use_agent", arguments: { name: "alice" } });
@@ -216,31 +222,27 @@ describe("082 sessions", () => {
     const uses = fake.calls.filter((x) => x.method === "cello_use_agent");
     expect(uses.length).toBe(2);
     expect(uses[0]!.conn).not.toBe(uses[1]!.conn);
-    const c1Conn = uses[0]!.conn;
-    await transports.get(c1)!.terminateSession();
-    await waitFor(() => fake.closedConns.has(c1Conn));
-    expect(fake.closedConns.has(c1Conn)).toBe(true);
-    expect(fake.closedConns.has(uses[1]!.conn)).toBe(false);
+    await waitFor(() => fake.closedConns.has(uses[0]!.conn) && fake.closedConns.has(uses[1]!.conn));
+    expect(fake.closedConns.has(uses[0]!.conn)).toBe(true);
+    expect(fake.closedConns.has(uses[1]!.conn)).toBe(true);
   });
 
-  it("idle sessions are closed and release their daemon connection", async () => {
-    await setup(); await boot({ idleTimeoutMs: 150 });
-    const c = await connect();
-    await c.callTool({ name: "cello_agents", arguments: {} });
-    const conn = fake.calls.find((x) => x.method === "cello_list_agents")!.conn;
-    await waitFor(() => fake.closedConns.has(conn));
-    expect(fake.closedConns.has(conn)).toBe(true);
-  });
-
-  it("over --max-sessions a new initialize is refused 503, not queued", async () => {
+  it("over --max-sessions a new initialize is refused 503 only when every session is busy (a stream is open)", async () => {
     await setup(); await boot({ maxSessions: 1 });
-    await connect();
-    const res = await fetch(handle!.url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+    const headers = { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json", accept: "application/json, text/event-stream" };
+    const init = () => fetch(handle!.url, {
+      method: "POST", headers,
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "x", version: "0" } } }),
     });
+    const first = await init();
+    await first.text();
+    const sid = first.headers.get("mcp-session-id")!;
+    const ac = new AbortController();
+    await fetch(handle!.url, { method: "GET", headers: { ...headers, accept: "text/event-stream", "mcp-session-id": sid, "mcp-protocol-version": "2025-03-26" }, signal: ac.signal });
+    await sleep(100);
+    const res = await init();
     expect(res.status).toBe(503);
+    ac.abort();
   });
 });
 

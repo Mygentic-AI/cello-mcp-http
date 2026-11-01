@@ -237,6 +237,26 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     });
     s.transport.onclose = () => closeSession(s, "transport_closed");
     await server.connect(s.transport);
+    // An excluded tool is not declared, but a client may still call it by name. Answer it here with
+    // the operator's reason, before the SDK's generic "not found", and never reach the daemon.
+    const inner = s.transport.onmessage;
+    s.transport.onmessage = (msg, extra) => {
+      const m = msg as { id?: string | number; method?: string; params?: { name?: unknown } };
+      if (m.method === "tools/call" && m.id !== undefined && typeof m.params?.name === "string" && excluded.has(m.params.name)) {
+        log("mcp.http.tool.refused", { tool: m.params.name, sessionId: s.id });
+        const refusal = {
+          ok: false,
+          reason: "tool_not_permitted",
+          guidance: `${m.params.name} is not exposed by this endpoint; its operator excluded it at startup and it cannot be enabled from here. Use one of the tools listed by tools/list.`,
+        };
+        void s.transport.send(
+          { jsonrpc: "2.0", id: m.id, result: { isError: true, content: [{ type: "text", text: JSON.stringify(refusal) }] } },
+          { relatedRequestId: m.id },
+        );
+        return;
+      }
+      inner?.(msg, extra);
+    };
     return s;
   }
 

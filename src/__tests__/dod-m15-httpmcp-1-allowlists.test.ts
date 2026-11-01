@@ -27,14 +27,11 @@ describe("082 tool allowlist", () => {
     expect(ALL.length).toBeGreaterThanOrEqual(60);
   });
 
-  it("DEFAULT_DENIED_TOOLS names exactly four tools, all real", () => {
-    expect([...DEFAULT_DENIED_TOOLS].sort()).toEqual([
-      "cello_config_set",
-      "cello_contact_set_tier",
-      "cello_set_agent_offline",
-      "cello_settings_set",
-    ]);
-    for (const t of DEFAULT_DENIED_TOOLS) expect(ALL, `${t} must be a registered tool`).toContain(t);
+  it("DEFAULT_DENIED_TOOLS is empty (M15D): a hosted user has no terminal, so nothing is hidden by default", () => {
+    expect([...DEFAULT_DENIED_TOOLS]).toEqual([]);
+    for (const t of ["cello_config_set", "cello_contact_set_tier", "cello_set_agent_offline", "cello_settings_set"]) {
+      expect(resolveAllowedTools(ALL, undefined).has(t), `${t} is exposed`).toBe(true);
+    }
   });
 
   it("no file → every registered tool except the default-denied set", () => {
