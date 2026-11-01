@@ -113,8 +113,8 @@ cello-mcp-http --port <n> --token-file <path> [options]
 | `--tls-cert <path>` `--tls-key <path>` | none | Serve HTTPS directly. The two go together. |
 | `--public-url <url>` | off | Turns on OAuth sign-in for clients that can only be given a URL. The public HTTPS origin, no path. |
 | `--state-dir <path>` | `~/.cello/mcp-http` | Where OAuth state and the pairing code live. Mode 0600. |
-| `--max-sessions <n>` | `16` | Concurrent MCP sessions. |
-| `--idle-timeout-s <n>` | `900` | Close a session idle this long. |
+| `--max-sessions <n>` | `16` | Concurrent MCP sessions (older-protocol clients). When full, the longest-idle session is closed to make room. |
+| `--idle-timeout-s <n>` | `120` | Close a session with no open notification stream and no call in flight after this long. |
 | `--help`, `--version` | | |
 
 Other environment: `CELLO_DIR` moves the directory that holds `daemon.sock` (default `~/.cello`).
@@ -152,9 +152,10 @@ One tool name per line.
   `@cello-protocol/connect`, so they are the stdio shim's, never a copy that can drift.
 - A name the endpoint does not know stops startup, and the error names it.
 - A file you give is followed exactly.
-- **With no file**, every tool is exposed **except** `cello_config_set`, `cello_settings_set`,
-  `cello_set_agent_offline` and `cello_contact_set_tier`. These change how reachable your agent is and
-  how the security layer behaves. Keep them at your own terminal unless you have a reason not to.
+- **With no file**, every tool is exposed. `cello_config_set`, `cello_settings_set`,
+  `cello_set_agent_offline` and `cello_contact_set_tier` change how reachable your agent is and how
+  the security layer behaves; to keep them at your own terminal, exclude them as in the example
+  above. A hosted agent has no terminal, so there they are exposed.
 - An excluded tool is absent from `tools/list`, and calling it anyway is refused `tool_not_permitted`.
 
 To make an endpoint read-only, list only the tools that read: for example `cello_agents`,
