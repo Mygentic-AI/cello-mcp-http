@@ -58,7 +58,7 @@ async function rpcBody(res: Response): Promise<Record<string, unknown>> {
 }
 
 /** ChatGPT's measured pattern: initialize → initialized → one tool call. No GET, no DELETE. */
-async function legacyCall(tool: string, args: Record<string, unknown>, init: RequestInit = {}): Promise<{ status: number; result?: Record<string, unknown> }> {
+async function legacyCall(tool: string, args: Record<string, unknown>, init: RequestInit = {}, extraHeaders: Record<string, string> = {}): Promise<{ status: number; result?: Record<string, unknown> }> {
   const initRes = await fetch(handle!.url, {
     method: "POST", headers: HEADERS,
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: LEGACY, capabilities: {}, clientInfo: { name: "chatgpt-like", version: "0" } } }),
@@ -66,7 +66,7 @@ async function legacyCall(tool: string, args: Record<string, unknown>, init: Req
   if (initRes.status !== 200) return { status: initRes.status };
   await initRes.text();
   const sid = initRes.headers.get("mcp-session-id")!;
-  const h = { ...HEADERS, "mcp-session-id": sid, "mcp-protocol-version": LEGACY };
+  const h = { ...HEADERS, ...extraHeaders, "mcp-session-id": sid, "mcp-protocol-version": LEGACY };
   await (await fetch(handle!.url, { method: "POST", headers: h, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) })).text();
   const res = await fetch(handle!.url, {
     method: "POST", headers: h, ...init,
@@ -92,7 +92,7 @@ describe("M15D 002: the endpoint under ChatGPT's per-call sessions", () => {
 
   it("every daemon request carries the caller from the verified token, and a forged header changes nothing", async () => {
     await boot();
-    await legacyCall("cello_status", {}, { headers: { ...HEADERS, "x-cello-caller": "oauth:victim" } });
+    await legacyCall("cello_status", { caller: { id: "oauth:victim", label: "x" } }, {}, { "x-cello-caller": "oauth:victim" });
     const tool = fake.calls.filter((c) => c.method === "cello_status");
     expect(tool.length).toBeGreaterThan(0);
     for (const c of tool) expect(c.caller).toEqual({ id: "static", label: "static bearer" });
