@@ -68,10 +68,9 @@ export const HTTP_USAGE = `cello-mcp-http — the CELLO MCP tools over Streamabl
   --port <n>              port to listen on (required)
   --host <addr>           bind address (default 127.0.0.1); a non-loopback address requires TLS
   --token-file <path>     file holding the bearer token, mode 0600 (or set CELLO_MCP_HTTP_TOKEN)
-  --agents a,b,c          serve only these agents (names or pubkeys; at least one; default: all)
+  --agents a,b,c          serve only these agents (names or agent ids; at least one; default: all)
   --tools-file <path>     tools to expose: one name per line, '*' for all, '-name' to remove
-                          (default: every tool except cello_config_set, cello_settings_set,
-                          cello_set_agent_offline, cello_contact_set_tier)
+                          (default: every tool)
   --tls-cert <path> --tls-key <path>   serve HTTPS directly (otherwise front it with your own TLS)
   --public-url <url>      turn on OAuth sign-in for clients that can only be given a URL (the Claude
                           app); the public HTTPS origin clients use, e.g. your Tailscale Funnel URL

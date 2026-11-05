@@ -6,13 +6,19 @@
  * AUTHORITATIVE — DEFAULT_DENIED_TOOLS applies only when there is no file.
  */
 
-import { registerCelloTools, type ToolSink } from "@cello-protocol/connect/lib";
+import type { Caller, ToolProxy } from "./call-proxy.js";
+import { TOOL_OPERATIONS, asResult, callLimitMs, inputSchema, toolParams } from "./v2.js";
 
 /**
- * Tools hidden when there is no tools file. Empty since M15D: a hosted user has no terminal, so a
- * tool hidden "for the operator to run at a terminal" was a tool nobody could run. The mechanism
- * stays for an operator who wants to narrow the surface with --tools-file.
+ * Tools that read or write a path on this machine. The caller is somewhere else, so it could never
+ * see the file, and it must not be able to touch paths here. cello_export_seal returns a seal directly.
  */
+const FILE_METHODS: ReadonlySet<string> = new Set(["export_transcript", "verify_seal", "verify_transcript"]);
+const WEB_OPERATIONS = TOOL_OPERATIONS.filter((op) => !FILE_METHODS.has(op.method));
+
+/** Web clients and the proxies in front of them give up on a long call, so a wait is short unless asked. */
+const WEB_WAIT_SECONDS = 50;
+
 export const DEFAULT_DENIED_TOOLS: readonly string[] = [];
 
 export type ToolsFileReason = "unknown_tool" | "empty_set";
@@ -24,12 +30,8 @@ export class ToolsFileError extends Error {
   }
 }
 
-/** The names `registerCelloTools` declares, learned by running it against a recording sink. */
 export function collectToolNames(): string[] {
-  const names: string[] = [];
-  const sink = { tool: (name: string) => { names.push(name); } } as unknown as ToolSink;
-  registerCelloTools(sink, { call: async () => undefined });
-  return names;
+  return WEB_OPERATIONS.map((op) => op.tool);
 }
 
 export function resolveAllowedTools(all: readonly string[], fileText: string | undefined): Set<string> {
@@ -63,16 +65,13 @@ export function resolveAllowedTools(all: readonly string[], fileText: string | u
 
 type V2Server = { registerTool(name: string, config: { description?: string; inputSchema?: unknown }, cb: (args: Record<string, unknown>) => unknown): unknown };
 
-/**
- * The shared tool list (`registerCelloTools`, written against the SDK v1 `tool()` call) declared on
- * an SDK v2 server, allowed tools only — the rest are never declared on it. Adapted here, at this
- * endpoint's boundary, so the plugin's registry is not forked.
- */
-export function v2Sink(target: unknown, allowed: ReadonlySet<string>): ToolSink {
-  const server = target as V2Server;
-  const tool = (name: string, description: string, shape: Record<string, unknown>, cb: (args: Record<string, unknown>) => unknown) => {
-    if (!allowed.has(name)) return undefined;
-    return server.registerTool(name, { description, inputSchema: shape }, (args) => cb(args ?? {}));
-  };
-  return { tool } as unknown as ToolSink;
+/** Declares the allowed tools on one server. The rest don't exist on it. */
+export function registerTools(server: unknown, allowed: ReadonlySet<string>, proxy: ToolProxy, caller: Caller): void {
+  for (const op of WEB_OPERATIONS) {
+    if (!allowed.has(op.tool)) continue;
+    (server as V2Server).registerTool(op.tool, { description: op.description, inputSchema: inputSchema(op) }, (given) => {
+      const args = op.method === "wait" ? { timeout_seconds: WEB_WAIT_SECONDS, ...given } : (given ?? {});
+      return asResult(() => proxy.call(op.method, toolParams(args, caller.id), callLimitMs(op, args)));
+    });
+  }
 }

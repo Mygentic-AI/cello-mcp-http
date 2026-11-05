@@ -22,11 +22,12 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "vendor-client": "scripts/vendor-client.sh",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@cello-protocol/connect": "latest",
+    "cello-v2": "file:vendor/cello-v2.tgz",
     "@modelcontextprotocol/node": "latest",
     "@modelcontextprotocol/sdk": "latest",
     "@modelcontextprotocol/server": "latest",

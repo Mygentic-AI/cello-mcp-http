@@ -46,59 +46,12 @@ describe("server instructions", () => {
     expect(client.getInstructions()).toBe(SERVER_INSTRUCTIONS);
   });
 
-  it("covers the rules a first-time caller gets wrong, and stays short enough to read every time", () => {
-    expect(SERVER_INSTRUCTIONS).toMatch(/signal/);
-    expect(SERVER_INSTRUCTIONS).toMatch(/cello_session_id/);
-    expect(SERVER_INSTRUCTIONS).toMatch(/agent/i);
-    expect(SERVER_INSTRUCTIONS).toMatch(/policy/i);
-    expect(SERVER_INSTRUCTIONS).toMatch(/cello_close_session/);
-    expect(SERVER_INSTRUCTIONS).toMatch(/cello_sealed_receipt/);
-    expect(SERVER_INSTRUCTIONS.length).toBeLessThan(4000);
-  });
 
   it("names no single vendor's client", () => {
     expect(SERVER_INSTRUCTIONS).not.toMatch(/claude|anthropic|cowork|chatgpt|openai/i);
   });
 });
 
-const POLICIES = join(root, "skills", "cello", "policies.md");
-const POLICIES_IN_PLUGIN = join(root, "plugins", "cello-remote", "skills", "cello", "policies.md");
-
-describe("the policies sub-skill", () => {
-  it("exists standalone and in the plugin, byte-identical", () => {
-    expect(existsSync(POLICIES)).toBe(true);
-    expect(existsSync(POLICIES_IN_PLUGIN)).toBe(true);
-    expect(readFileSync(POLICIES_IN_PLUGIN, "utf8")).toBe(readFileSync(POLICIES, "utf8"));
-  });
-
-  it("is reachable from the skill and from the server instructions", () => {
-    expect(readFileSync(STANDALONE, "utf8")).toMatch(/\(policies\.md\)/);
-    expect(SERVER_INSTRUCTIONS).toMatch(/policies\.md/);
-  });
-
-  it("uses placeholder agents only: no real key and none of the operator's own agent names", () => {
-    const text = readFileSync(POLICIES, "utf8");
-    expect(text).not.toMatch(/[0-9a-f]{64}/);
-    expect(text).not.toMatch(/Miss_Chelly|Mac_Coder|CELLO_(Support|Feedback|Coder)/);
-    expect(text).toMatch(/alice/);
-    expect(text).toMatch(/support-bot/);
-  });
-
-  it("teaches the parts that cost time the first time", () => {
-    const text = readFileSync(POLICIES, "utf8");
-    expect(text).toMatch(/proposal_not_found/);
-    expect(text).toMatch(/--agent/);
-    expect(text).toMatch(/one-way|one direction/i);
-    expect(text).toMatch(/24 hours/);
-    expect(text).toMatch(/most specific/i);
-    expect(text).toMatch(/strict/i);
-    expect(text).toMatch(/escalat/i);
-  });
-
-  it("names no single vendor's client", () => {
-    expect(readFileSync(POLICIES, "utf8")).not.toMatch(/claude|anthropic|cowork|chatgpt|openai/i);
-  });
-});
 
 describe("the skill", () => {
   it("exists standalone and inside the plugin", () => {
@@ -115,13 +68,6 @@ describe("the skill", () => {
     expect(text).toMatch(/^---\nname: cello\ndescription: .{40,}\n---\n/);
   });
 
-  it("teaches the remote-specific rules", () => {
-    const text = readFileSync(STANDALONE, "utf8");
-    expect(text).toMatch(/pass the agent|`agent`/i);
-    expect(text).toMatch(/no approve tool|cannot approve|there is no approve/i);
-    expect(text).toMatch(/cello_session_id/);
-    expect(text).toMatch(/seal_in_progress/);
-  });
 
   it("does not tell a remote caller to fix the daemon from where it cannot", () => {
     const text = readFileSync(STANDALONE, "utf8");

@@ -13,7 +13,7 @@ import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/serv
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { OAuthClientInformationFull, OAuthTokens, OAuthTokenRevocationRequest } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { InvalidGrantError, InvalidTokenError, TooManyRequestsError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import type { LogFn } from "@cello-protocol/connect/lib";
+import type { LogFn } from "./log.js";
 import { loadState, tokenHash, updateState } from "./oauth-store.js";
 import { consumePairingCode } from "./pairing.js";
 

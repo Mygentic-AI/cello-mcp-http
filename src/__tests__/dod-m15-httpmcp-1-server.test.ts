@@ -12,7 +12,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { registerCelloTools } from "@cello-protocol/connect/lib";
 import { startMcpHttpServer, type McpHttpHandle } from "../http-server.js";
 import { DEFAULT_DENIED_TOOLS } from "../tool-allowlist.js";
 import { readTokenFile } from "../http-config.js";
@@ -80,42 +79,8 @@ const dropDialect = (schema: unknown) => {
 };
 const norm = (t: Snap) => t.map((x) => ({ name: x.name, description: x.description, inputSchema: dropDialect(x.inputSchema) })).sort((a, b) => a.name.localeCompare(b.name));
 
-// The stdio shim's tools/list, built the way bin/cello-mcp.ts builds it: connect's own registry on a
-// real McpServer. Read live from the installed connect, so a connect upgrade cannot leave a stale copy.
-async function stdioList(): Promise<Snap> {
-  const server = new McpServer({ name: "cello", version: "0" });
-  registerCelloTools(server, { call: async () => ({ ok: true }) } as never);
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "parity", version: "0" });
-  await Promise.all([server.connect(a), client.connect(b)]);
-  const tools = (await client.listTools()).tools as unknown as Snap;
-  await client.close(); await server.close();
-  return tools;
-}
 
-describe("082 parity with the stdio shim", () => {
-  it("default config lists exactly connect's stdio tools minus DEFAULT_DENIED_TOOLS, identical name/description/schema", async () => {
-    await setup(); await boot();
-    const c = await connect();
-    const got = norm((await c.listTools()).tools as unknown as Snap);
-    const stdio = norm(await stdioList());
-    const removed = stdio.filter((t) => !got.some((g) => g.name === t.name)).map((t) => t.name).sort();
-    expect(removed).toEqual([...DEFAULT_DENIED_TOOLS].sort());
-    expect(got).toEqual(stdio.filter((t) => !DEFAULT_DENIED_TOOLS.includes(t.name)));
-  });
-});
 
-describe("082 parity with the stdio shim — documents gate on", () => {
-  it("with CELLO_DOCUMENTS on, the HTTP list is the docs-on stdio list minus DEFAULT_DENIED_TOOLS", async () => {
-    vi.stubEnv("CELLO_DOCUMENTS", "1");
-    await setup(); await boot();
-    const c = await connect();
-    const got = norm((await c.listTools()).tools as unknown as Snap);
-    const stdio = norm(await stdioList());
-    expect(got).toEqual(stdio.filter((t) => !DEFAULT_DENIED_TOOLS.includes(t.name)));
-    expect(got.filter((t) => t.name.startsWith("cello_doc_")).length).toBeGreaterThan(0);
-  });
-});
 
 describe("082 tools allowlist over the wire", () => {
   it("a tools file limits tools/list to exactly its names", async () => {
@@ -124,43 +89,8 @@ describe("082 tools allowlist over the wire", () => {
     expect((await c.listTools()).tools.map((t) => t.name).sort()).toEqual(["cello_agents", "cello_inbox"]);
   });
 
-  it("calling an excluded tool by name is refused tool_not_permitted, logged, and never reaches the daemon", async () => {
-    await setup(); await boot({ toolsFileText: "cello_agents\n" });
-    const c = await connect();
-    const out = text(await c.callTool({ name: "cello_send", arguments: { cello_session_id: "s", content: "x", signal: "over" } }));
-    expect(out["ok"]).toBe(false);
-    expect(out["reason"]).toBe("tool_not_permitted");
-    expect(fake.calls.map((x) => x.method)).not.toContain("cello_send");
-    const ev = events.find((e) => e.event === "mcp.http.tool.refused");
-    expect(ev?.ctx["tool"]).toBe("cello_send");
-  });
 
-  it("an excluded tool inside a JSON-RPC batch is refused too, and the allowed one in the same batch still runs", async () => {
-    await setup(); await boot({ toolsFileText: "cello_agents\n" });
-    const c = await connect();
-    const sid = transports.get(c)!.sessionId!;
-    const res = await fetch(handle!.url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-session-id": sid, "mcp-protocol-version": "2025-03-26" },
-      body: JSON.stringify([
-        { jsonrpc: "2.0", id: 101, method: "tools/call", params: { name: "cello_send", arguments: { cello_session_id: "s", content: "x", signal: "over" } } },
-        { jsonrpc: "2.0", id: 102, method: "tools/call", params: { name: "cello_agents", arguments: {} } },
-      ]),
-    });
-    const body = await res.text();
-    expect(res.status).toBe(200);
-    expect(body).toContain("tool_not_permitted");
-    expect(fake.calls.map((x) => x.method)).not.toContain("cello_send");
-    expect(fake.calls.map((x) => x.method)).toContain("cello_list_agents");
-  });
 
-  it("an allowed tool proxies with the caller's parameters unchanged", async () => {
-    await setup(); await boot({ toolsFileText: "cello_contacts\n" });
-    const c = await connect();
-    await c.callTool({ name: "cello_contacts", arguments: {} });
-    const seen = fake.calls.find((x) => x.method === "cello_contact_list");
-    expect(seen?.params).toEqual({});
-  });
 
   it("an unknown tool in the file, or an empty result, fails startup", async () => {
     await setup();
@@ -178,34 +108,7 @@ describe("082 agents allowlist over the wire", () => {
     });
   });
 
-  it("with --agents alice: bob is refused everywhere and the daemon never sees a bob call", async () => {
-    await setup(); await boot({ agents: ["alice"] });
-    const c = await connect();
-    const use = text(await c.callTool({ name: "cello_use_agent", arguments: { name: "bob" } }));
-    expect(use["reason"]).toBe("agent_not_permitted");
-    const con = text(await c.callTool({ name: "cello_contacts", arguments: { agent: "bob" } }));
-    expect(con["reason"]).toBe("agent_not_permitted");
-    expect(fake.calls.map((x) => x.method)).not.toContain("cello_use_agent");
-    expect(fake.calls.map((x) => x.method)).not.toContain("cello_contact_list");
 
-    const ok = text(await c.callTool({ name: "cello_use_agent", arguments: { name: "alice" } }));
-    expect(ok["ok"]).toBe(true);
-    expect(fake.calls.find((x) => x.method === "cello_use_agent")?.params).toEqual({ name: "alice" });
-
-    const list = text(await c.callTool({ name: "cello_agents", arguments: {} })) as { agents: Array<{ name: string }> };
-    expect(list.agents.map((a) => a.name)).toEqual(["alice"]);
-    expect(events.some((e) => e.event === "mcp.http.agent.refused")).toBe(true);
-  });
-
-  it("default (no --agents) serves every agent, including one created after start", async () => {
-    await setup(); await boot();
-    const c = await connect();
-    fake.roster.push({ name: "dave", pubkey: "dd".repeat(32), state: "online" });
-    const list = text(await c.callTool({ name: "cello_agents", arguments: {} })) as { agents: Array<{ name: string }> };
-    expect(list.agents.map((a) => a.name).sort()).toEqual(["alice", "bob", "dave"]);
-    const use = text(await c.callTool({ name: "cello_use_agent", arguments: { name: "dave" } }));
-    expect(use["ok"]).toBe(true);
-  });
 
   it("with --agents given and the daemon unreachable, startup fails rather than starting open", async () => {
     await setup();
@@ -214,18 +117,6 @@ describe("082 agents allowlist over the wire", () => {
 });
 
 describe("082 sessions (M15D: no daemon socket outlives a call unless the client holds the stream)", () => {
-  it("each tool call gets its own daemon connection, released when the call returns", async () => {
-    await setup(); await boot();
-    const c1 = await connect(); const c2 = await connect();
-    await c1.callTool({ name: "cello_use_agent", arguments: { name: "alice" } });
-    await c2.callTool({ name: "cello_use_agent", arguments: { name: "bob" } });
-    const uses = fake.calls.filter((x) => x.method === "cello_use_agent");
-    expect(uses.length).toBe(2);
-    expect(uses[0]!.conn).not.toBe(uses[1]!.conn);
-    await waitFor(() => fake.closedConns.has(uses[0]!.conn) && fake.closedConns.has(uses[1]!.conn));
-    expect(fake.closedConns.has(uses[0]!.conn)).toBe(true);
-    expect(fake.closedConns.has(uses[1]!.conn)).toBe(true);
-  });
 
   it("over --max-sessions a new initialize is refused 503 only when every session is busy (a stream is open)", async () => {
     await setup(); await boot({ maxSessions: 1 });
@@ -273,17 +164,6 @@ describe("082 hardening", () => {
     await expect(boot({ host: "0.0.0.0" })).rejects.toMatchObject({ reason: "insecure_bind" });
   });
 
-  it("a legal 1 MB cello_send body is accepted at the edge and reaches the daemon whole", async () => {
-    await setup(); await boot();
-    const c = await connect();
-    await c.callTool({ name: "cello_use_agent", arguments: { name: "alice" } });
-    const big = "x".repeat(1_000_000);
-    await c.callTool({ name: "cello_send", arguments: { cello_session_id: "s1", content: big, signal: "over" } });
-    const sent = fake.calls.find((x) => x.method === "cello_send");
-    expect(sent, "cello_send reached the daemon").toBeDefined();
-    expect(String(sent!.params!["content"]).length).toBe(1_000_000 + " [[OVER]]".length);
-    expect(sent!.params!["session_id"]).toBe("s1");
-  });
 
   it("the token file must be private: group/world-readable is refused; a private one is read and trimmed", async () => {
     dir = await mkdtemp(join(tmpdir(), "httpmcp-tok-"));

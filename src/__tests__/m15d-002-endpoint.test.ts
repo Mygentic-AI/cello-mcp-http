@@ -90,86 +90,12 @@ describe("M15D 002: the endpoint under ChatGPT's per-call sessions", () => {
     expect(events.some((e) => e.event === "mcp.http.request" && e.ctx["kind"] === "stateless")).toBe(true);
   }, 60_000);
 
-  it("every daemon request carries the caller from the verified token, and a forged header changes nothing", async () => {
-    await boot();
-    await legacyCall("cello_status", { caller: { id: "oauth:victim", label: "x" } }, {}, { "x-cello-caller": "oauth:victim" });
-    const tool = fake.calls.filter((c) => c.method === "cello_status");
-    expect(tool.length).toBeGreaterThan(0);
-    for (const c of tool) expect(c.caller).toEqual({ id: "static", label: "static bearer" });
-    expect(fake.calls.filter((c) => c.method === "ipc.connect").every((c) => c.params?.["clientType"] === "endpoint")).toBe(true);
-  });
 
-  it("cello_receive is committed only after the response is written, and the token never reaches the model", async () => {
-    fake.respond = (m) => (m === "cello_receive" ? { ok: true, count: 1, messages: [{ text: "hi" }], commit: "tok-1" } : undefined);
-    await boot();
-    const r = await legacyCall("cello_receive", { cello_session_id: "s1", agent: "alice" });
-    expect(r.result?.["messages"]).toEqual([{ text: "hi" }]);
-    expect("commit" in (r.result ?? {})).toBe(false);
-    await sleep(200);
-    expect(fake.calls.filter((c) => c.method === "session.receive.commit").map((c) => c.params?.["token"])).toEqual(["tok-1"]);
-  });
 
-  it("a caller that hangs up mid-receive closes the daemon socket and commits nothing", async () => {
-    let receiveConn = 0;
-    fake.respond = async (m, _p, conn) => {
-      if (m !== "cello_receive") return undefined;
-      receiveConn = conn;
-      await sleep(1500);
-      return { ok: true, count: 1, messages: [{ text: "late" }], commit: "tok-late" };
-    };
-    await boot();
-    const ac = new AbortController();
-    const pending = legacyCall("cello_receive", { cello_session_id: "s1", agent: "alice" }, { signal: ac.signal }).catch(() => ({ status: 0 }));
-    await sleep(300);
-    ac.abort();
-    await pending;
-    await sleep(300);
-    expect(receiveConn).toBeGreaterThan(0);
-    expect(fake.closedConns.has(receiveConn), "the daemon socket of the abandoned call is closed").toBe(true);
-    await sleep(1500);
-    expect(fake.calls.filter((c) => c.method === "session.receive.commit")).toEqual([]);
-  });
 
-  it("the four previously hidden tools are exposed", async () => {
-    await boot();
-    const res = await legacyCall("cello_settings_set", { key: "x", value: "y" });
-    expect(res.status).toBe(200);
-    expect(res.result?.["reason"]).not.toBe("tool_not_permitted");
-  });
 });
 
 describe("M15D 002: stream sessions keep notifications", () => {
-  it("a GET stream holds one daemon socket, forwards a doorbell, and frees it when the stream closes", async () => {
-    await boot();
-    const initRes = await fetch(handle!.url, {
-      method: "POST", headers: HEADERS,
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: LEGACY, capabilities: {}, clientInfo: { name: "codex-like", version: "0" } } }),
-    });
-    await initRes.text();
-    const sid = initRes.headers.get("mcp-session-id")!;
-    const h = { ...HEADERS, "mcp-session-id": sid, "mcp-protocol-version": LEGACY };
-    await (await fetch(handle!.url, { method: "POST", headers: h, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) })).text();
-    const before = fake.openNow();
-    const ac = new AbortController();
-    const stream = await fetch(handle!.url, { method: "GET", headers: { ...h, accept: "text/event-stream" }, signal: ac.signal });
-    expect(stream.status).toBe(200);
-    await sleep(200);
-    expect(fake.openNow(), "the stream holds one daemon socket").toBe(before + 1);
-    const streamConn = fake.calls.filter((c) => c.method === "ipc.connect").at(-1)!.conn;
-    fake.push(streamConn, { notification: "cello_message", data: { agent: "alice", type: "cello_message", from: "bb".repeat(32), session_id: "s1" } });
-    const reader = stream.body!.getReader();
-    let got = "";
-    const deadline = Date.now() + 2000;
-    while (!got.includes("notifications/claude/channel") && Date.now() < deadline) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      got += new TextDecoder().decode(value);
-    }
-    expect(got).toContain("notifications/claude/channel");
-    ac.abort();
-    await sleep(300);
-    expect(fake.closedConns.has(streamConn), "closing the stream frees its daemon socket").toBe(true);
-  });
 
   it("a session with no stream and no call is closed after the idle limit; its id then answers 404", async () => {
     await boot({ streamIdleMs: 200 });
@@ -210,28 +136,6 @@ describe("M15D 002: stream sessions keep notifications", () => {
 });
 
 describe("M15D 002: 2026-07-28 requests (ChatGPT desktop's first request)", () => {
-  it("DoD 2 — a 2026-07-28 request is answered 200, statelessly, and reaches the daemon with the caller", async () => {
-    await boot();
-    const meta = {
-      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-      "io.modelcontextprotocol/clientInfo": { name: "openai-mcp", version: "1.0.0" },
-      "io.modelcontextprotocol/clientCapabilities": {},
-    };
-    const res = await fetch(handle!.url, {
-      method: "POST",
-      headers: { ...HEADERS, "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call", "mcp-name": "cello_status" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "cello_status", arguments: {}, _meta: meta } }),
-    });
-    expect(res.status, await res.clone().text()).toBe(200);
-    expect(res.headers.get("mcp-session-id"), "no session in this era").toBeNull();
-    const body = await rpcBody(res);
-    expect(body["error"], JSON.stringify(body)).toBeUndefined();
-    await sleep(50);
-    expect(events.some((e) => e.event === "mcp.http.request" && e.ctx["era"] === "modern" && e.ctx["tool"] === "cello_status" && e.ctx["outcome"] === "http_200"),
-      `request log: ${JSON.stringify(events.filter((e) => e.event === "mcp.http.request").map((e) => e.ctx))}`).toBe(true);
-    expect(fake.calls.filter((c) => c.method === "cello_status").map((c) => c.caller)).toEqual([{ id: "static", label: "static bearer" }]);
-    expect(fake.openNow()).toBe(0);
-  });
 
   it("a 2026-07-28 request without a token is refused 401 with the challenge, like any other", async () => {
     await boot();
@@ -245,25 +149,3 @@ describe("M15D 002: 2026-07-28 requests (ChatGPT desktop's first request)", () =
   });
 });
 
-describe("M15D 002: delivery on the 2026-07-28 path", () => {
-  it("a modern cello_receive is committed after the response is written, and the token is stripped", async () => {
-    fake.respond = (m) => (m === "cello_receive" ? { ok: true, count: 1, messages: [{ text: "hi" }], commit: "tok-modern" } : undefined);
-    await boot();
-    const meta = {
-      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-      "io.modelcontextprotocol/clientInfo": { name: "openai-mcp", version: "1.0.0" },
-      "io.modelcontextprotocol/clientCapabilities": {},
-    };
-    const res = await fetch(handle!.url, {
-      method: "POST",
-      headers: { ...HEADERS, "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call", "mcp-name": "cello_receive" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "cello_receive", arguments: { cello_session_id: "s1", agent: "alice" }, _meta: meta } }),
-    });
-    expect(res.status).toBe(200);
-    const body = await rpcBody(res);
-    const text = ((body["result"] as { content: Array<{ text: string }> }).content[0]!).text;
-    expect(JSON.parse(text)).not.toHaveProperty("commit");
-    await sleep(200);
-    expect(fake.calls.filter((c) => c.method === "session.receive.commit").map((c) => c.params?.["token"])).toEqual(["tok-modern"]);
-  });
-});

@@ -1,4 +1,4 @@
-/** A fake CELLO daemon on a real Unix socket: newline-delimited JSON, the IpcProxy wire. */
+/** A fake CELLO daemon on a real Unix socket: newline-delimited JSON, the v2 daemon wire. */
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 
@@ -11,7 +11,7 @@ export interface Fake {
   calls: Rec[];
   closedConns: Set<number>;
   connCount: () => number;
-  roster: Array<{ name: string; pubkey: string; state: string }>;
+  roster: Array<{ name: string; agent_id: string; online: boolean }>;
   /** M15D: most daemon sockets open at the same moment, and how many are open now. */
   maxOpen: () => number;
   openNow: () => number;
@@ -36,8 +36,8 @@ export async function fakeDaemon(dir: string): Promise<Fake> {
     openNow: () => open,
     push: (conn, frame) => { sockets[conn - 1]?.write(JSON.stringify(frame) + "\n"); },
     roster: [
-      { name: "alice", pubkey: A, state: "online" },
-      { name: "bob", pubkey: B, state: "online" },
+      { name: "alice", agent_id: A, online: true },
+      { name: "bob", agent_id: B, online: true },
     ],
     close: async () => { for (const s of sockets) s.destroy(); await new Promise<void>((r) => server.close(() => r())); },
   };
@@ -52,11 +52,11 @@ export async function fakeDaemon(dir: string): Promise<Fake> {
       while ((i = buf.indexOf("\n")) !== -1) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1);
         if (!line.trim()) continue;
-        const req = JSON.parse(line) as { id: string; method: string; params?: Record<string, unknown>; caller?: unknown };
+        const req = JSON.parse(line) as { id: number; method: string; params?: Record<string, unknown>; caller?: unknown };
         calls.push({ method: req.method, params: req.params, conn, ...(req.caller !== undefined ? { caller: req.caller } : {}) });
-        const fallback = () => (req.method === "cello_list_agents" ? { agents: fake.roster } : { ok: true, method: req.method });
+        const fallback = () => (req.method === "agents" ? { agents: fake.roster } : { method: req.method, ...(req.method === "receive" || req.method === "channel_read" ? { commit_token: "tok" } : {}) });
         void Promise.resolve(fake.respond?.(req.method, req.params, conn)).then((custom) => {
-          if (!socket.destroyed) socket.write(JSON.stringify({ id: req.id, result: custom ?? fallback() }) + "\n");
+          if (!socket.destroyed) socket.write(JSON.stringify({ id: req.id, ok: true, result: custom ?? fallback() }) + "\n");
         });
       }
     });

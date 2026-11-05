@@ -7,32 +7,20 @@
  * daemon is called unless permitted.
  */
 import { describe, it, expect, vi } from "vitest";
-import { registerCelloTools, type ToolSink } from "@cello-protocol/connect/lib";
 import {
   DEFAULT_DENIED_TOOLS,
   ToolsFileError,
   collectToolNames,
   resolveAllowedTools,
 } from "../tool-allowlist.js";
-import { guardProxy, makeNotificationPermit, resolvePermittedAgents } from "../agent-guard.js";
+import { guardProxy, resolvePermittedAgents } from "../agent-guard.js";
+import type { ToolProxy } from "../call-proxy.js";
 
 vi.stubEnv("CELLO_DOCUMENTS", "");
 const ALL = collectToolNames();
 
 describe("082 tool allowlist", () => {
-  it("collects the registry from the ONE registration function", () => {
-    expect(ALL).toContain("cello_send");
-    expect(ALL).toContain("cello_use_agent");
-    expect(ALL.length).toBe(new Set(ALL).size);
-    expect(ALL.length).toBeGreaterThanOrEqual(60);
-  });
 
-  it("DEFAULT_DENIED_TOOLS is empty (M15D): a hosted user has no terminal, so nothing is hidden by default", () => {
-    expect([...DEFAULT_DENIED_TOOLS]).toEqual([]);
-    for (const t of ["cello_config_set", "cello_contact_set_tier", "cello_set_agent_offline", "cello_settings_set"]) {
-      expect(resolveAllowedTools(ALL, undefined).has(t), `${t} is exposed`).toBe(true);
-    }
-  });
 
   it("no file → every registered tool except the default-denied set", () => {
     const got = resolveAllowedTools(ALL, undefined);
@@ -101,163 +89,53 @@ function recorder(rosterFn: () => unknown) {
     inner: {
       async call(method: string, params?: Record<string, unknown>) {
         calls.push({ method, params });
-        if (method === "cello_list_agents") return rosterFn();
+        if (method === "cello_agents") return rosterFn();
         return { ok: true, method };
       },
     },
   };
 }
 
-describe("082 agent guard", () => {
-  const R = () => roster([{ name: "alice", pubkey: A }, { name: "bob", pubkey: B }]);
+describe("agent guard", () => {
+  const A = "aa".repeat(32);
+  const B = "bb".repeat(32);
+  const inner = (agents: { name: string; agent_id: string }[]) => {
+    const calls: string[] = [];
+    const proxy: ToolProxy = { call: async (method, params) => {
+      calls.push(`${method}:${String(params["agent"])}`);
+      return method === "agents" ? { agents } : { ok: true };
+    } };
+    return { proxy, calls };
+  };
+  const both = [{ name: "alice", agent_id: A }, { name: "bob", agent_id: B }];
 
-  it("resolves names OR pubkeys to identities; unknown entries throw naming them and the existing list", async () => {
-    const { inner } = recorder(R);
-    const ok = await resolvePermittedAgents(inner, ["alice", B]);
-    expect([...ok.permitted].sort()).toEqual([A, B].sort());
-    await expect(resolvePermittedAgents(inner, ["alice", "zed"])).rejects.toMatchObject({
-      reason: "agent_unknown",
-      message: expect.stringMatching(/zed[\s\S]*alice[\s\S]*bob/),
-    });
-    await expect(resolvePermittedAgents(inner, [])).rejects.toMatchObject({ reason: "agents_empty" });
+  it("resolves names or ids to identities; an unknown entry is named", async () => {
+    const { proxy } = inner(both);
+    expect([...await resolvePermittedAgents(proxy, ["alice", B])]).toEqual([A, B]);
+    await expect(resolvePermittedAgents(proxy, ["carol"])).rejects.toThrow(/carol.*alice, bob/);
+    await expect(resolvePermittedAgents(proxy, [])).rejects.toThrow(/empty/);
   });
 
-  it("a name in cello_use_agent that is not permitted is refused and the daemon never sees the call", async () => {
-    const { inner, calls } = recorder(R);
-    const g = guardProxy(inner, new Set([A]));
-    const out = (await g.call("cello_use_agent", { name: "bob" })) as Record<string, unknown>;
-    expect(out["ok"]).toBe(false);
-    expect(out["reason"]).toBe("agent_not_permitted");
-    expect(String(out["guidance"])).toContain("alice");
-    expect(calls.map((c) => c.method)).not.toContain("cello_use_agent");
+  it("an unpermitted agent is refused and the daemon never gets the call", async () => {
+    const { proxy, calls } = inner(both);
+    await expect(guardProxy(proxy, new Set([A]), () => {}).call("send", { agent: "bob" })).rejects.toMatchObject({ code: "agent_not_permitted" });
+    expect(calls.filter((c) => c.startsWith("send"))).toEqual([]);
   });
 
-  it("a permitted agent passes through with its params unchanged", async () => {
-    const { inner, calls } = recorder(R);
-    const g = guardProxy(inner, new Set([A]));
-    await g.call("cello_use_agent", { name: "alice" });
-    const forwarded = calls.find((c) => c.method === "cello_use_agent");
-    expect(forwarded?.params).toEqual({ name: "alice" });
+  it("a name is compared by identity: a reused name meaning another agent is refused", async () => {
+    const { proxy } = inner([{ name: "alice", agent_id: B }]);
+    await expect(guardProxy(proxy, new Set([A]), () => {}).call("receive", { agent: "alice" })).rejects.toMatchObject({ code: "agent_not_permitted" });
   });
 
-  it("the optional `agent` param on any other tool is checked the same way", async () => {
-    const { inner, calls } = recorder(R);
-    const g = guardProxy(inner, new Set([A]));
-    const bad = (await g.call("cello_contact_list", { agent: "bob" })) as Record<string, unknown>;
-    expect(bad["reason"]).toBe("agent_not_permitted");
-    await g.call("cello_contact_list", { agent: "alice" });
-    await g.call("cello_contact_list", {});
-    expect(calls.filter((c) => c.method === "cello_contact_list").map((c) => c.params)).toEqual([
-      { agent: "alice" },
-      {},
-    ]);
+  it("a name two agents share is refused unless both are permitted", async () => {
+    const { proxy } = inner([{ name: "x", agent_id: A }, { name: "x", agent_id: B }]);
+    await expect(guardProxy(proxy, new Set([A]), () => {}).call("receive", { agent: "x" })).rejects.toMatchObject({ code: "agent_not_permitted" });
   });
 
-  it("a NAME is compared by identity: a reused name that now means another agent is refused", async () => {
-    let live = roster([{ name: "alice", pubkey: A }]);
-    const { inner } = recorder(() => live);
-    const g = guardProxy(inner, new Set([A]));
-    live = roster([{ name: "carol", pubkey: A }, { name: "alice", pubkey: C }]);
-    const out = (await g.call("cello_use_agent", { name: "alice" })) as Record<string, unknown>;
-    expect(out["reason"]).toBe("agent_not_permitted");
-    const viaNewName = (await g.call("cello_use_agent", { name: "carol" })) as Record<string, unknown>;
-    expect(viaNewName["ok"]).toBe(true);
-  });
-
-  it("an agent the daemon does not know is refused, not forwarded", async () => {
-    const { inner, calls } = recorder(R);
-    const g = guardProxy(inner, new Set([A]));
-    const out = (await g.call("cello_use_agent", { name: "nobody" })) as Record<string, unknown>;
-    expect(out["reason"]).toBe("agent_not_permitted");
-    expect(calls.map((c) => c.method)).not.toContain("cello_use_agent");
-  });
-
-  it("cello_list_agents is filtered to the permitted set", async () => {
-    const { inner } = recorder(R);
-    const g = guardProxy(inner, new Set([A]));
-    const out = (await g.call("cello_list_agents")) as { agents: Array<{ name: string }> };
-    expect(out.agents.map((a) => a.name)).toEqual(["alice"]);
-  });
-
-  it("`all` (no restriction) returns the inner proxy untouched", () => {
-    const { inner } = recorder(R);
-    expect(guardProxy(inner, "all")).toBe(inner);
-  });
-
-  it("a NAME-keyed agent tool is one of exactly the four the guard checks under `name`", () => {
-    const shapes = new Map<string, string[]>();
-    registerCelloTools({ tool: (n: string, _d: string, shape: Record<string, unknown>) => { shapes.set(n, Object.keys(shape)); } } as unknown as ToolSink, { call: async () => undefined });
-    const withName = [...shapes].filter(([, keys]) => keys.includes("name")).map(([n]) => n).sort();
-    // cello_channel_create's `name` is a channel name, not an agent; any NEW tool with `name` must be decided here.
-    expect(withName).toEqual(["cello_channel_create", "cello_create_agent", "cello_set_agent_offline", "cello_start_agent", "cello_use_agent"]);
-    for (const [n, keys] of shapes) {
-      const agentish = keys.filter((k) => /agent/i.test(k) && k !== "agent");
-      expect(agentish, `${n} names an agent under a key the guard does not check`).toEqual([]);
-    }
-  });
-
-  it("with no agent named: a pinned endpoint fills its one agent; a multi-agent endpoint refuses agent_required", async () => {
-    const { inner, calls } = recorder(R);
-    const pinned = guardProxy(inner, new Set([A]), () => {}, "alice");
-    await pinned.call("cello_send", { session_id: "s" });
-    expect(calls.filter((c) => c.method === "cello_send").map((c) => c.params?.["agent"])).toEqual(["alice"]);
-
-    const several = guardProxy(inner, new Set([A, B]), () => {});
-    const out = (await several.call("cello_receive", { session_id: "s" })) as Record<string, unknown>;
-    expect(out["reason"]).toBe("agent_required");
-    expect(calls.map((c) => c.method)).not.toContain("cello_receive");
-    // A call that names no agent and acts as none still runs.
-    await several.call("cello_status", {});
-    expect(calls.map((c) => c.method)).toContain("cello_status");
-  });
-
-  it("an `agent` that is not a string is refused, not forwarded", async () => {
-    const { inner, calls } = recorder(R);
-    const g = guardProxy(inner, new Set([A]));
-    for (const bad of [42, { name: "alice" }, ["alice"], null]) {
-      const out = (await g.call("cello_contact_list", { agent: bad })) as Record<string, unknown>;
-      expect(out["reason"], JSON.stringify(bad)).toBe("agent_not_permitted");
-    }
-    expect(calls.map((c) => c.method)).not.toContain("cello_contact_list");
-  });
-
-  it("a name two roster entries share is refused unless BOTH are permitted", async () => {
-    const dup = () => roster([{ name: "alice", pubkey: A }, { name: "alice", pubkey: C }]);
-    const { inner, calls } = recorder(dup);
-    const out = (await guardProxy(inner, new Set([A])).call("cello_use_agent", { name: "alice" })) as Record<string, unknown>;
-    expect(out["reason"]).toBe("agent_not_permitted");
-    expect(calls.map((c) => c.method)).not.toContain("cello_use_agent");
-  });
-
-  it("a roster row missing its pubkey stops the call with a named reason; nothing is forwarded", async () => {
-    const { inner, calls } = recorder(() => ({ agents: [{ name: "alice" }] }));
-    const out = (await guardProxy(inner, new Set([A])).call("cello_use_agent", { name: "alice" })) as Record<string, unknown>;
-    expect(out["reason"]).toBe("agent_roster_unreadable");
-    expect(String(out["guidance"])).toContain("cello status");
-    expect(calls.map((c) => c.method)).not.toContain("cello_use_agent");
-  });
-
-  it("a daemon that is down answers with its own recovery, not a permission refusal", async () => {
-    const down = { ok: false, reason: "daemon_not_running", guidance: "start it" };
-    const { inner } = recorder(() => down);
-    const out = (await guardProxy(inner, new Set([A])).call("cello_use_agent", { name: "alice" })) as Record<string, unknown>;
-    expect(out["reason"]).toBe("daemon_not_running");
-  });
-
-  it("notifications: judged on a FRESH roster; not-permitted, no-agent and unreadable-roster frames are dropped with their cause", async () => {
-    let live = R();
-    const logged: Array<Record<string, unknown>> = [];
-    const { inner } = recorder(() => live);
-    const permit = makeNotificationPermit(inner, new Set([A]), (_e, ctx) => logged.push(ctx ?? {}));
-    expect(await permit({ data: { agent: "alice" } })).toBe(true);
-    expect(await permit({ data: { agent: "bob" } })).toBe(false);
-    expect(await permit({ data: { agent: "ghost" } })).toBe(false);
-    expect(await permit({ data: {} })).toBe(false);
-    live = roster([{ name: "carol", pubkey: A }]);
-    expect(await permit({ data: { agent: "carol" } }), "a permitted agent renamed after the session began").toBe(true);
-    expect(await permit({ data: { agent: "alice" } }), "the old name no longer means the permitted agent").toBe(false);
-    live = { agents: "nope" } as never;
-    expect(await permit({ data: { agent: "carol" } })).toBe(false);
-    expect(logged.map((l) => l["cause"])).toEqual(["not_permitted", "not_permitted", "no_agent_in_frame", "not_permitted", "roster_unreadable"]);
+  it("a limited endpoint can't create an agent, and lists only its own", async () => {
+    const { proxy } = inner(both);
+    const guarded = guardProxy(proxy, new Set([A]), () => {});
+    await expect(guarded.call("create_agent", { name: "new" })).rejects.toMatchObject({ code: "agent_not_permitted" });
+    expect(await guarded.call("agents", {})).toEqual({ agents: [both[0]] });
   });
 });

@@ -1,15 +1,13 @@
 /**
- * Which agents an HTTP endpoint may serve.
- *
- * The unit of identity is the agent's pubkey (from `cello_list_agents`), never its display name: a
- * name in a tool argument is resolved to a pubkey against a FRESH roster before it is compared, so a
- * renamed agent, or a name reused after retirement, cannot pass as a permitted one.
+ * Which agents an HTTP endpoint may serve. The unit is the agent_id, never its name: a name in a call
+ * is resolved against a fresh roster before it is compared, so a renamed agent, or a name reused after
+ * retirement, can't pass as a permitted one. Every call names its agent in `agent`.
  */
+import type { ToolProxy } from "./call-proxy.js";
+import { logEvent, type LogFn } from "./log.js";
+import { DaemonRefused } from "./v2.js";
 
-import type { ToolProxy } from "@cello-protocol/connect/lib";
-import { logEvent, type LogFn } from "@cello-protocol/connect/lib";
-
-export type AgentGuardReason = "agents_empty" | "agent_unknown" | "daemon_unreachable";
+export type AgentGuardReason = "agents_empty" | "agent_unknown";
 
 export class AgentGuardError extends Error {
   constructor(readonly reason: AgentGuardReason, message: string) {
@@ -18,169 +16,56 @@ export class AgentGuardError extends Error {
   }
 }
 
-interface RosterEntry { name: string; pubkey: string }
-
-/** The daemon did not answer with a roster (it is down, or refused); `raw` is what it said instead. */
-class RosterUnavailable extends Error {
-  constructor(readonly raw: unknown) {
-    super("agent roster unavailable");
-  }
-}
+interface RosterEntry { name: string; agent_id: string }
 
 async function roster(proxy: ToolProxy): Promise<RosterEntry[]> {
-  const out = (await proxy.call("cello_list_agents")) as { agents?: unknown } | undefined;
-  if (!Array.isArray(out?.agents)) throw new RosterUnavailable(out);
-  const list = out.agents as Array<Record<string, unknown>>;
-  if (!list.every((a) => typeof a["name"] === "string" && typeof a["pubkey"] === "string")) throw new RosterUnavailable(out);
-  return list.map((a) => ({ name: a["name"] as string, pubkey: (a["pubkey"] as string).toLowerCase() }));
+  return ((await proxy.call("agents", {})) as { agents: RosterEntry[] }).agents;
 }
 
-/** Startup: turn the operator's names-or-pubkeys into a set of identities, or fail naming what is wrong. */
-export async function resolvePermittedAgents(
-  proxy: ToolProxy,
-  entries: readonly string[],
-): Promise<{ permitted: Set<string>; names: string[] }> {
+/** Startup: turn the operator's names-or-ids into a set of identities, or fail naming what is wrong. */
+export async function resolvePermittedAgents(proxy: ToolProxy, entries: readonly string[]): Promise<Set<string>> {
   if (entries.length === 0) {
     throw new AgentGuardError("agents_empty", "an agent list was given but it is empty; name at least one agent, or omit it to serve all");
   }
-  let existing: RosterEntry[];
-  try {
-    existing = await roster(proxy);
-  } catch (e) {
-    if (e instanceof RosterUnavailable) {
-      throw new AgentGuardError("daemon_unreachable", `cannot check the agent list against the daemon: ${JSON.stringify(e.raw)}`);
-    }
-    throw e;
-  }
+  const existing = await roster(proxy);
   const permitted = new Set<string>();
   const unknown: string[] = [];
   for (const raw of entries) {
-    const e = raw.trim();
-    const hit = existing.find((a) => a.name === e || a.pubkey === e.toLowerCase());
-    if (hit) permitted.add(hit.pubkey);
-    else unknown.push(e);
+    const entry = raw.trim();
+    const hit = existing.find((a) => a.name === entry || a.agent_id === entry.toLowerCase());
+    if (hit) permitted.add(hit.agent_id);
+    else unknown.push(entry);
   }
   if (unknown.length > 0) {
-    throw new AgentGuardError(
-      "agent_unknown",
-      `unknown agent(s): ${unknown.join(", ")}. Agents this daemon has: ${existing.map((a) => a.name).join(", ") || "(none)"}`,
-    );
+    throw new AgentGuardError("agent_unknown", `unknown agent(s): ${unknown.join(", ")}. Agents this daemon has: ${existing.map((a) => a.name).join(", ") || "(none)"}`);
   }
-  return { permitted, names: existing.filter((a) => permitted.has(a.pubkey)).map((a) => a.name) };
+  return permitted;
 }
 
-/** The daemon methods whose `name` param names an AGENT; every other tool carries an optional `agent`. */
-// cello_create_agent (M15D) names its new agent under `name`: an endpoint limited by --agents may only
-// create an agent it would also be allowed to serve.
-const NAME_KEYED_AGENT_METHODS = new Set(["cello_start_agent", "cello_set_agent_offline", "cello_use_agent", "cello_create_agent"]);
+export function guardProxy(inner: ToolProxy, permitted: ReadonlySet<string> | "all", log: LogFn = logEvent): ToolProxy {
+  if (permitted === "all") return inner;
 
-/**
- * Calls that act as an agent the daemon would otherwise pick itself (its sole-online fallback). On an
- * endpoint serving several agents, an unnamed one could land on an agent outside the list, so it is
- * refused and the model is told to name the agent.
- */
-const ACTS_AS_AGENT = new Set([
-  "cello_send", "cello_receive", "cello_close_session", "cello_initiate_session", "cello_await_session",
-  "cello_get_transcript", "cello_list_sessions", "cello_check_notifications",
-]);
-
-export function guardProxy(
-  inner: ToolProxy,
-  permitted: ReadonlySet<string> | "all",
-  log: LogFn = logEvent,
-  /** The one agent's NAME when the endpoint serves exactly one: an unnamed call means that agent. */
-  pinned?: string,
-): ToolProxy {
-  if (permitted === "all") return inner as ToolProxy;
-
-  const refuse = async (asked: string, method: string): Promise<Record<string, unknown>> => {
-    const names = (await roster(inner).catch(() => [] as RosterEntry[])).filter((a) => permitted.has(a.pubkey)).map((a) => a.name);
+  const refuse = async (asked: string, method: string): Promise<never> => {
+    const names = (await roster(inner)).filter((a) => permitted.has(a.agent_id)).map((a) => a.name);
     log("mcp.http.agent.refused", { method, agent: asked });
-    return {
-      ok: false,
-      reason: "agent_not_permitted",
-      guidance: `This endpoint serves only: ${names.join(", ") || "(the agent list could not be read just now)"}. "${asked}" is not one of them; the endpoint's operator chose that list at startup and it cannot be widened from here. Use one of the listed agents.`,
-    };
+    throw new DaemonRefused("agent_not_permitted", `This endpoint serves only: ${names.join(", ")}. "${asked}" is not one of them. Its operator chose that list at startup, and it can't be widened from here.`);
   };
 
   return {
-    async call(method, params) {
-      const key = NAME_KEYED_AGENT_METHODS.has(method) ? "name" : "agent";
-      if (key === "agent" && params?.["agent"] === undefined && ACTS_AS_AGENT.has(method)) {
-        if (pinned !== undefined) params = { ...(params ?? {}), agent: pinned };
-        else {
-          log("mcp.http.agent.refused", { method, agent: null });
-          return { ok: false, reason: "agent_required", guidance: "This endpoint serves several agents, so every call must name one with the agent parameter. Call cello_agents to see them." };
-        }
+    async call(method, params, limitMs) {
+      // A new agent could never be on a list fixed at startup.
+      if (method === "create_agent") return refuse(String(params["name"]), method);
+      const asked = params["agent"];
+      if (asked !== undefined) {
+        if (typeof asked !== "string") return refuse(String(asked), method);
+        const matches = (await roster(inner)).filter((a) => a.name === asked || a.agent_id === asked.toLowerCase());
+        if (matches.length === 0 || matches.some((a) => !permitted.has(a.agent_id))) return refuse(asked, method);
       }
-      const given = params?.[key];
-      if (given !== undefined && typeof given !== "string") return refuse(String(given), method);
-      const asked = typeof given === "string" ? given : null;
-      if (asked !== null) {
-        try {
-          const matches = (await roster(inner)).filter((a) => a.name === asked || a.pubkey === asked.toLowerCase());
-          // Every roster entry the name could mean must be permitted; none, or an ambiguous one, is refused.
-          if (matches.length === 0 || matches.some((a) => !permitted.has(a.pubkey))) return await refuse(asked, method);
-        } catch (e) {
-          // No readable roster means no identity to compare: refuse. A daemon that is down answers
-          // with its own recovery text, which is returned as-is rather than masked as a permission failure.
-          if (e instanceof RosterUnavailable) return rosterFailureAnswer(e.raw);
-          throw e;
-        }
-      }
-      const result = await inner.call(method, params);
-      // Any answer carrying an agent roster is filtered, whichever tool produced it.
-      if (result && typeof result === "object") {
-        const r = result as { agents?: Array<Record<string, unknown>> };
-        if (Array.isArray(r.agents)) {
-          return { ...r, agents: r.agents.filter((a) => typeof a["pubkey"] === "string" && permitted.has((a["pubkey"] as string).toLowerCase())) };
-        }
-      }
-      return result;
+      const result = await inner.call(method, params, limitMs);
+      // agents and status both list every agent on the daemon, with its sessions.
+      const listed = (result as { agents?: { agent_id?: string }[] } | null)?.agents;
+      if (!Array.isArray(listed)) return result;
+      return { ...(result as object), agents: listed.filter((a) => typeof a.agent_id === "string" && permitted.has(a.agent_id)) };
     },
-  };
-}
-
-function rosterFailureAnswer(raw: unknown): unknown {
-  if (raw && typeof raw === "object" && (raw as { ok?: unknown }).ok === false) return raw;
-  return {
-    ok: false,
-    reason: "agent_roster_unreadable",
-    guidance:
-      "The daemon's agent list was not in the shape this endpoint expects, so it cannot tell which agent this call concerns and sent nothing. " +
-      "Run `cello status` on the machine and make sure the daemon and cello-mcp-http are on matching versions.",
-  };
-}
-
-/**
- * A predicate for daemon doorbell frames, checked against a FRESH roster each time so an agent
- * renamed or created after the session began is judged on what it is now. A frame about an agent not
- * permitted, with no agent, or that cannot be checked (roster unreadable) is dropped and the cause is
- * logged; the recovery for a dropped doorbell is the inbox, as for any missed push.
- */
-export function makeNotificationPermit(
-  proxy: ToolProxy,
-  permitted: ReadonlySet<string>,
-  log: LogFn = logEvent,
-): (frame: Record<string, unknown>) => Promise<boolean> {
-  return async (frame) => {
-    const data = (frame as { data?: Record<string, unknown> }).data ?? {};
-    const agent = data["agent"];
-    if (typeof agent !== "string") {
-      log("mcp.http.notification.dropped", { agent: null, cause: "no_agent_in_frame" });
-      return false;
-    }
-    try {
-      const matches = (await roster(proxy)).filter((a) => a.name === agent || a.pubkey === agent.toLowerCase());
-      const ok = matches.length > 0 && matches.every((a) => permitted.has(a.pubkey));
-      if (!ok) log("mcp.http.notification.dropped", { agent, cause: "not_permitted" });
-      return ok;
-    } catch (e) {
-      if (e instanceof RosterUnavailable) {
-        log("mcp.http.notification.dropped", { agent, cause: "roster_unreadable" });
-        return false;
-      }
-      throw e;
-    }
   };
 }

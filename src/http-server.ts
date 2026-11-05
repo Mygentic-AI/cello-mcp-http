@@ -3,8 +3,7 @@
  *
  * An adapter, not a node: it holds a socket path and a bearer token, nothing else. Served on MCP SDK
  * v2: 2026-07-28 requests are self-contained and get a fresh server each; 2025-era clients keep a
- * session, but no daemon socket outlives a tool call unless the client holds the notification
- * stream (M15D). Every daemon request carries the caller from the verified token, which is what the
+ * session, but no daemon socket outlives a tool call. Every daemon request carries the caller from the verified token, which is what the
  * daemon's one-holder-per-agent rule keys on. Two allowlists bound what a caller reaches — which tools are declared on the server
  * (an excluded tool does not exist on it) and which agents a tool argument may name (checked here,
  * before the daemon is called). The allowlists constrain THIS endpoint; any local process that can
@@ -16,12 +15,12 @@ import { createServer as createHttps } from "node:https";
 import { randomUUID, timingSafeEqual, createHash } from "node:crypto";
 import { McpServer as McpServerV2, createMcpHandler, isLegacyRequest, isInitializeRequest, type AuthInfo } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest } from "@modelcontextprotocol/node";
-import { IpcProxy, registerCelloTools, forwardDaemonNotifications, logEvent, type LogFn } from "@cello-protocol/connect/lib";
-import { callProxy, commitDeliveries, openEndpointSocket, requestScope, type Caller, type RequestScope } from "./call-proxy.js";
+import { DaemonRoute, requestScope, type Caller, type RequestScope } from "./call-proxy.js";
+import { logEvent, type LogFn } from "./log.js";
 import { McpHttpConfigError, isLoopbackHost } from "./http-config.js";
-import { ToolsFileError, collectToolNames, resolveAllowedTools, v2Sink } from "./tool-allowlist.js";
+import { ToolsFileError, collectToolNames, registerTools, resolveAllowedTools } from "./tool-allowlist.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
-import { AgentGuardError, guardProxy, makeNotificationPermit, resolvePermittedAgents } from "./agent-guard.js";
+import { AgentGuardError, guardProxy, resolvePermittedAgents } from "./agent-guard.js";
 import express from "express";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { CelloOAuthProvider } from "./oauth-provider.js";
@@ -106,22 +105,14 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
   }
   const excluded = new Set(allNames.filter((n) => !allowed.has(n)));
 
+  const route = new DaemonRoute(opts.socketPath, log);
   let permitted: ReadonlySet<string> | "all" = "all";
-  /** The agent's name when --agents names exactly one: unnamed calls and the stream mean that agent. */
-  let pinnedAgent: string | undefined;
   if (opts.agents !== undefined) {
-    const probe = new IpcProxy(opts.socketPath, { clientType: "mcp" });
     try {
-      await probe.connect();
-      await probe.call("ipc.connect", { clientType: "mcp" });
-      const resolved = await resolvePermittedAgents(probe, opts.agents);
-      permitted = resolved.permitted;
-      if (resolved.names.length === 1) pinnedAgent = resolved.names[0];
+      permitted = await resolvePermittedAgents(route.proxy(), opts.agents);
     } catch (e) {
       if (e instanceof AgentGuardError) throw new McpHttpConfigError(e.reason, e.message);
       throw new McpHttpConfigError("daemon_unreachable", `cannot reach the CELLO daemon at ${opts.socketPath} to check --agents: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      probe.close();
     }
   }
 
@@ -166,9 +157,8 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
   };
 
   /**
-   * 2025-era (pre-2026-07-28) sessions. A session holds NO daemon socket of its own: each tool call
-   * opens one and closes it (`call-proxy.ts`). Only a client that opens the GET notification stream
-   * gets a socket for the stream's life — Claude Code, Codex, Hermes — so doorbells still reach it.
+   * 2025-era (pre-2026-07-28) sessions. A session holds no daemon socket: each tool call opens one
+   * and closes it (`call-proxy.ts`). A GET stream stays open if a client wants one, and nothing is pushed on it.
    * A session with no stream and no call in flight is closed after `streamIdleMs`; when the table is
    * full the oldest idle session is evicted instead of the new one refused.
    */
@@ -179,7 +169,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     caller: Caller;
     lastUsed: number;
     inFlight: number;
-    stream: IpcProxy | undefined;
+    streamOpen: boolean;
     closed: boolean;
   }
   const sessions = new Map<string, LegacySession>();
@@ -189,14 +179,13 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     if (s.closed) return;
     s.closed = true;
     if (s.id !== undefined) sessions.delete(s.id);
-    s.stream?.close();
-    s.stream = undefined;
+    s.streamOpen = false;
     void s.transport.close().catch(() => {});
     s.server.close().catch((e: unknown) => log("mcp.http.session.close_failed", { sessionId: s.id, error: e instanceof Error ? e.message : String(e) }));
     log("mcp.http.session.closed", { sessionId: s.id, why });
   };
 
-  const idle = (s: LegacySession): boolean => s.stream === undefined && s.inFlight === 0;
+  const idle = (s: LegacySession): boolean => !s.streamOpen && s.inFlight === 0;
   const sweeper = setInterval(() => {
     const now = Date.now();
     for (const s of [...sessions.values()]) if (idle(s) && now - s.lastUsed > streamIdleMs) closeSession(s, "idle");
@@ -217,10 +206,9 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
   function buildServer(caller: Caller): McpServerV2 {
     const server = new McpServerV2(
       { name: "cello", version: opts.version },
-      { capabilities: { experimental: { "claude/channel": {} } }, instructions: SERVER_INSTRUCTIONS },
+      { instructions: SERVER_INSTRUCTIONS },
     );
-    const calls = callProxy({ socketPath: opts.socketPath, caller, log });
-    registerCelloTools(v2Sink(server, allowed), guardProxy(calls, permitted, log, pinnedAgent));
+    registerTools(server, allowed, guardProxy(route.proxy(), permitted, log), caller);
     return server;
   }
 
@@ -228,7 +216,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     const server = buildServer(caller);
     const s: LegacySession = {
       id: undefined, transport: undefined as unknown as NodeStreamableHTTPServerTransport, server, caller,
-      lastUsed: Date.now(), inFlight: 0, stream: undefined, closed: false,
+      lastUsed: Date.now(), inFlight: 0, streamOpen: false, closed: false,
     };
     s.transport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
@@ -248,9 +236,8 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
       if (m.method === "tools/call" && m.id !== undefined && typeof m.params?.name === "string" && excluded.has(m.params.name)) {
         log("mcp.http.tool.refused", { tool: m.params.name, sessionId: s.id });
         const refusal = {
-          ok: false,
-          reason: "tool_not_permitted",
-          guidance: `${m.params.name} is not exposed by this endpoint; its operator excluded it at startup and it cannot be enabled from here. Use one of the tools listed by tools/list.`,
+          error: "tool_not_permitted",
+          message: `${m.params.name} is not exposed by this endpoint; its operator excluded it at startup and it cannot be enabled from here. Use one of the tools listed by tools/list.`,
         };
         void s.transport.send(
           { jsonrpc: "2.0", id: m.id, result: { isError: true, content: [{ type: "text", text: JSON.stringify(refusal) }] } },
@@ -263,33 +250,6 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     return s;
   }
 
-  /** The GET stream: one daemon socket for its life, attended so doorbells route here (contract C5). */
-  async function openStream(s: LegacySession, res: ServerResponse): Promise<void> {
-    const proxy = await openEndpointSocket(opts.socketPath, s.caller);
-    const attended = (await proxy.call("agent.attend", pinnedAgent !== undefined ? { agent: pinnedAgent } : {})) as { ok?: boolean; reason?: string; agent?: string } | null;
-    const permit = permitted === "all" ? undefined : makeNotificationPermit(proxy, permitted, log);
-    forwardDaemonNotifications(proxy, s.server as unknown as Parameters<typeof forwardDaemonNotifications>[1], permit);
-    s.stream = proxy;
-    log("mcp.http.stream.opened", { sessionId: s.id, attended: attended?.ok === true ? attended.agent : (attended?.reason ?? "no_answer") });
-    // A stream that cannot attend gets no doorbells. Say so on the stream itself, not only in our log.
-    if (attended?.ok !== true && attended?.reason !== "no_current_agent") {
-      const why = attended?.reason ?? "no answer from the daemon";
-      void (s.server as unknown as { server: { notification(n: unknown): Promise<void> } }).server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: `CELLO — this connection will not be woken for new messages (${why}). Call cello_receive to check for messages, or cello_use_agent to take the agent.`,
-          meta: { type: "stream_unattended", reason: why },
-        },
-      }).catch(() => {});
-    }
-    res.on("close", () => {
-      if (s.stream === proxy) s.stream = undefined;
-      proxy.close();
-      s.lastUsed = Date.now();
-      log("mcp.http.stream.closed", { sessionId: s.id });
-    });
-  }
-
   /** Run one HTTP exchange in its own request scope: hang-up aborts it, a written response commits. */
   async function inScope(caller: Caller, res: ServerResponse, record: Record<string, unknown>, run: () => Promise<void>): Promise<void> {
     const started = Date.now();
@@ -298,7 +258,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
     let finished = false;
     res.on("finish", () => {
       finished = true;
-      void commitDeliveries(opts.socketPath, caller, scope.commits, log);
+      route.commit(caller, scope.commits);
     });
     res.on("close", () => {
       if (!finished) ac.abort();
@@ -383,7 +343,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
       session.inFlight++;
       session.lastUsed = Date.now();
       res.on("close", () => { session.inFlight--; session.lastUsed = Date.now(); });
-      await inScope(caller, res, { era: "legacy", kind: session.stream ? "stream" : "stateless", ...record }, () => session.transport.handleRequest(req, res, parsed));
+      await inScope(caller, res, { era: "legacy", kind: session.streamOpen ? "stream" : "stateless", ...record }, () => session.transport.handleRequest(req, res, parsed));
       return;
     }
 
@@ -394,7 +354,8 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<McpHttpH
       }
       known.lastUsed = Date.now();
       if (req.method === "GET") {
-        await openStream(known, res);
+        known.streamOpen = true;
+        res.on("close", () => { known.streamOpen = false; known.lastUsed = Date.now(); });
         await known.transport.handleRequest(req, res);
         return;
       }

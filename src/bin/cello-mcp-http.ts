@@ -2,8 +2,8 @@
 /**
  * cello-mcp-http — the CELLO MCP tools over Streamable HTTP, in front of the operator's own daemon.
  *
- * For MCP clients that speak only remote HTTPS. Holds no key material: it proxies to the daemon over
- * ~/.cello/daemon.sock exactly as cello-mcp does. TLS and public exposure are the operator's.
+ * For MCP clients that speak only remote HTTPS. Holds no key material: it passes each call to the local
+ * daemon over its socket. TLS and public exposure are the operator's.
  */
 
 import { homedir } from "node:os";
@@ -14,7 +14,8 @@ import { HTTP_USAGE, McpHttpConfigError, parseHttpArgs, readTokenFile } from "..
 import { startMcpHttpServer } from "../http-server.js";
 import { createPairingCode, PAIRING_TTL_MS } from "../pairing.js";
 import { listClients, revokeTokens } from "../oauth-store.js";
-import { logEvent } from "@cello-protocol/connect/lib";
+import { logEvent } from "../log.js";
+import { socketPath } from "../v2.js";
 
 const pkg = createRequire(import.meta.url)("../../package.json") as { version: string };
 
@@ -61,7 +62,7 @@ try {
   const token = args.tokenFile !== undefined ? readTokenFile(args.tokenFile) : envToken;
 
   const handle = await startMcpHttpServer({
-    socketPath: join(celloDir, "daemon.sock"),
+    socketPath: socketPath(),
     host: args.host,
     port: args.port,
     token,

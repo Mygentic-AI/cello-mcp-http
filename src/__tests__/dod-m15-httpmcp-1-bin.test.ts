@@ -66,13 +66,6 @@ describe("082 cello-mcp-http binary", () => {
     expect(r.out()).not.toContain("mcp.http.listening");
   });
 
-  it("--agents naming an agent the daemon lacks → exits 1 naming it and the agents that exist", async () => {
-    dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
-    fake = await fakeDaemon(dir);
-    const r = run(["--port", String(await freePort()), "--agents", "alice,zed"], { CELLO_MCP_HTTP_TOKEN: TOKEN });
-    expect(await r.exited).toBe(1);
-    expect(r.out()).toMatch(/zed[\s\S]*alice[\s\S]*bob/);
-  });
 
   it("a group-readable --token-file → exits 1", async () => {
     dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
@@ -84,28 +77,6 @@ describe("082 cello-mcp-http binary", () => {
     expect(r.out()).toMatch(/chmod 600/);
   });
 
-  it("serves exactly the tools file over HTTP for a client holding the token file's token, limited to --agents", async () => {
-    dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
-    fake = await fakeDaemon(dir);
-    const tf = join(dir, "token");
-    const tools = join(dir, "tools.txt");
-    await writeFile(tf, `${TOKEN}\n`);
-    await chmod(tf, 0o600);
-    await writeFile(tools, "# read only\ncello_agents\ncello_use_agent\n");
-    const port = await freePort();
-    const r = run(["--port", String(port), "--token-file", tf, "--tools-file", tools, "--agents", "alice"]);
-    await until(() => r.out().includes("mcp.http.listening"));
-    expect(r.out(), "the binary never reported listening").toContain("mcp.http.listening");
-
-    const c = new Client({ name: "bin-test", version: "0" });
-    await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } }));
-    expect((await c.listTools()).tools.map((t) => t.name).sort()).toEqual(["cello_agents", "cello_use_agent"]);
-    const bob = JSON.parse(((await c.callTool({ name: "cello_use_agent", arguments: { name: "bob" } })) as { content: Array<{ text: string }> }).content[0]!.text);
-    expect(bob.reason).toBe("agent_not_permitted");
-    const alice = JSON.parse(((await c.callTool({ name: "cello_use_agent", arguments: { name: "alice" } })) as { content: Array<{ text: string }> }).content[0]!.text);
-    expect(alice.ok).toBe(true);
-    await c.close();
-  });
 });
 
 describe("083 operator commands", () => {

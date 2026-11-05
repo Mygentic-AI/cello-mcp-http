@@ -4,7 +4,7 @@ The CELLO tools, served over [MCP](https://modelcontextprotocol.io) Streamable H
 that reaches an MCP server by URL instead of by starting a local process.
 
 CELLO's agents live in a daemon on your machine. Most MCP clients can start a local process and talk to
-it over stdio (`@cello-protocol/connect`). Some cannot: hosted assistants, gateways, agent platforms on
+it over stdio (the CELLO client's shim). Some cannot: hosted assistants, gateways, agent platforms on
 another machine, or any client whose only setting is "server URL". This package gives those clients a
 URL to point at.
 
@@ -43,7 +43,7 @@ Use it when the client **cannot start a local process** and can only be given a 
 runs on a **different machine** from the daemon.
 
 Do not use it when the client and the daemon are on the same machine and the client can launch a
-command. Use `@cello-protocol/connect` (stdio) there. It needs no endpoint, no token and no network
+command. Use the CELLO client's stdio shim there. It needs no endpoint, no token and no network
 exposure, and it is strictly safer.
 
 ## Requirements
@@ -54,7 +54,7 @@ exposure, and it is strictly safer.
   (see [Giving it a public address](#giving-it-a-public-address)).
 
 The endpoint must run **as the same user as the daemon**. It reaches the daemon through
-`~/.cello/daemon.sock` (or `$CELLO_DIR/daemon.sock`), and access to that socket is the trust boundary.
+`~/.cello-v2/daemon.sock` (or `$CELLO_V2_HOME/daemon.sock`), and access to that socket is the trust boundary.
 
 ## Quick start
 
@@ -72,8 +72,8 @@ The endpoint must run **as the same user as the daemon**. It reaches the daemon 
    *
    -cello_config_set
    -cello_settings_set
-   -cello_set_agent_offline
    -cello_contact_set_tier
+
    ```
 
 3. **Start it.** Always pass `--agents`.
@@ -114,7 +114,7 @@ cello-mcp-http --port <n> --token-file <path> [options]
 | `--public-url <url>` | off | Turns on OAuth sign-in for clients that can only be given a URL. The public HTTPS origin, no path. |
 | `--state-dir <path>` | `~/.cello/mcp-http` | Where OAuth state and the pairing code live. Mode 0600. |
 | `--max-sessions <n>` | `16` | Concurrent MCP sessions (older-protocol clients). When full, the longest-idle session is closed to make room. |
-| `--idle-timeout-s <n>` | `120` | Close a session with no open notification stream and no call in flight after this long. |
+| `--idle-timeout-s <n>` | `120` | Close a session with no open stream and no call in flight after this long. |
 | `--help`, `--version` | | |
 
 Other environment: `CELLO_DIR` moves the directory that holds `daemon.sock` (default `~/.cello`).
@@ -148,12 +148,13 @@ One tool name per line.
 | `-cello_config_set` | remove that tool |
 | `# text` or a blank line | ignored |
 
-- The names are the `cello_*` tools. They, their descriptions and their parameters come from
-  `@cello-protocol/connect`, so they are the stdio shim's, never a copy that can drift.
+- The names are the `cello_*` tools. They, their descriptions and their parameters come from the
+  client's own operations table, so they can't drift from its command line.
 - A name the endpoint does not know stops startup, and the error names it.
 - A file you give is followed exactly.
-- **With no file**, every tool is exposed. `cello_config_set`, `cello_settings_set`,
-  `cello_set_agent_offline` and `cello_contact_set_tier` change how reachable your agent is and how
+- **With no file**, every tool is exposed, except those that read or write a file path on this machine
+  (`cello_export_transcript`, `cello_verify_seal`, `cello_verify_transcript`), which never are. `cello_config_set`, `cello_settings_set`
+  and `cello_contact_set_tier` change how reachable your agent is and how
   the security layer behaves; to keep them at your own terminal, exclude them as in the example
   above. A hosted agent has no terminal, so there they are exposed.
 - An excluded tool is absent from `tools/list`, and calling it anyway is refused `tool_not_permitted`.
@@ -342,7 +343,7 @@ multiplexer while you are trying it out.
   `cello-mcp-http clients`.
 - **Change the agents or tools.** Edit the flag or the tools file and restart. Existing MCP sessions end
   with the process.
-- **Upgrade.** The tools track `@cello-protocol/connect`, which is a dependency at `latest`. After
+- **Upgrade.** The tools come from the CELLO client package, which is a dependency. After
   upgrading the CELLO CLI and daemon, restart the endpoint so it picks up the matching tool set.
 - **Stop it.** `SIGINT` or `SIGTERM` closes it cleanly.
 
@@ -376,7 +377,7 @@ What it does **not** do:
 These are the things that surprise people the first time.
 
 **Every call names its agent.** The endpoint does not attend an agent on the client's behalf. Attending
-an agent (`cello_use_agent`) makes it the one that receives live notifications, and it suppresses that
+an agent (`cello_use_agent`) makes this app its holder. Nothing is pushed to it: it calls `cello_wait`, then `cello_receive`, and it suppresses that
 agent's away message, so a client that only wants to read or send for an agent should pass the agent by
 name on each call instead. Many CELLO tools take an `agent` parameter for exactly this.
 
@@ -424,8 +425,7 @@ this package.
 **It connects and lists no tools.** Your tools file may exclude them. An excluded tool is invisible, not
 refused. Check the file, and check it names `cello_*` tools.
 
-**It worked, then calls fail after the daemon was restarted.** Each MCP session holds its own connection
-to the daemon. Reconnect the client to open a fresh session. If calls still fail, restart the endpoint
+**It worked, then calls fail after the daemon was restarted.** Each call opens its own connection, so the next call reaches the new daemon. A restart forgets who holds each agent, so call `cello_use_agent` again. If calls still fail,
 after the daemon is up.
 
 **A sign-in page loads but the code is refused.** It expired (10 minutes), was already used, or five
@@ -447,6 +447,6 @@ Tests live in `src/__tests__`. Publishing is by pushing a `v*` tag; CI type-chec
 
 ## Related
 
-- `@cello-protocol/connect` — the stdio MCP shim, for a client on the same machine as the daemon.
+- The CELLO client: the stdio MCP shim, for a client on the same machine as the daemon.
 - `@cello-protocol/cli` — the `cello` command and the daemon.
 - <https://cello.mygentic.ai> — the CELLO network.
