@@ -209,7 +209,7 @@ test("the connection drops mid-wait: the wait ends, the hold stays, and the mess
     await new Promise((resolve) => setTimeout(resolve, 500));
     socket.destroy();
   });
-  const seen = await until("the endpoint ends the request", () => endpoint.log().split("\n").find((l) => l.includes('"tool":"cello_wait"') && l.includes('"ms":') && l.includes(`"outcome"`) && Date.parse((JSON.parse(l) as { time: string }).time) >= droppedAfter));
+  const seen = await until("the endpoint ends the request", () => endpoint.log().split("\n").find((l) => l.includes('"tool":"cello_wait"') && l.includes('"ms":') && l.includes(`"outcome"`) && Date.parse((JSON.parse(l) as { ts: string }).ts) >= droppedAfter));
   assert.match(seen, /client_gone/, "the wait must still have been open when the connection dropped");
   assert.equal((await claude.tool("cello_use_agent", { agent: "Ann" }))["error"], "agent_held");
   peer("send", session, "sent while you were cut off", "--over");
