@@ -10,7 +10,7 @@ fi
 here=$(cd "$(dirname "$0")/.." && pwd)
 client=$(cd "${1:?name a checkout of the client}" && pwd)
 server_dir="${CELLO_SERVER_DIR:-$HOME/code/cello-server}"
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-v2-web}" CELLO_PORT="${CELLO_PORT:-18620}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-web}" CELLO_PORT="${CELLO_PORT:-18620}"
 # The endpoints listen on the next two ports, so a run given its own CELLO_PORT shares nothing with another.
 export CELLO_WEB_PORT=$((CELLO_PORT + 1))
 # Servers require a verified email signal. The client's stand-in issuer gives one, and tells the server to count it.
@@ -24,10 +24,10 @@ if ! diff -r "$client/src/protocol" "$server_dir/src/protocol" >/dev/null; then
   echo "The server's protocol copy differs from the client's. Point CELLO_SERVER_DIR at a server checkout that matches." >&2
   exit 1
 fi
-lock="$HOME/cello-v2-live-runs/.heavy-lock"
+lock="$HOME/cello-live-runs/.heavy-lock"
 held=""
 # A killed test skips its own cleanup. Only this run's daemons carry this port in their command.
-trap 'if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; pkill -f "daemon/main.js ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; pkill -f "cello-mcp-http.js --port $CELLO_WEB_PORT " 2>/dev/null || true; pkill -f "cello-mcp-http.js --port $((CELLO_WEB_PORT + 1)) " 2>/dev/null || true; cd "$server_dir" && docker compose logs --timestamps server > "$HOME/cello-v2-live-runs/web-endpoint-server-$(date +%s).log" 2>&1; docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+trap 'if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; pkill -f "daemon/main.js ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; pkill -f "cello-mcp-http.js --port $CELLO_WEB_PORT " 2>/dev/null || true; pkill -f "cello-mcp-http.js --port $((CELLO_WEB_PORT + 1)) " 2>/dev/null || true; cd "$server_dir" && docker compose logs --timestamps server > "$HOME/cello-live-runs/web-endpoint-server-$(date +%s).log" 2>&1; docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 waited=0
 until mkdir "$lock" 2>/dev/null; do
   waited=$((waited + 5))

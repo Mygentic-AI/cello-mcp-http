@@ -132,7 +132,7 @@ before(async () => {
 
 after(async () => {
   if (endpoint) await stop(endpoint);
-  const evidence = join(homedir(), "cello-v2-live-runs", `web-endpoint-${new Date().toISOString().replaceAll(":", "-")}`);
+  const evidence = join(homedir(), "cello-live-runs", `web-endpoint-${new Date().toISOString().replaceAll(":", "-")}`);
   mkdirSync(evidence, { recursive: true });
   writeFileSync(join(evidence, "endpoint.log"), endpoint.log());
   cpSync(join(ownerEnv["CELLO_HOME"] as string, "daemon.log"), join(evidence, "owner-daemon.log"));
