@@ -54,7 +54,7 @@ exposure, and it is strictly safer.
   (see [Giving it a public address](#giving-it-a-public-address)).
 
 The endpoint must run **as the same user as the daemon**. It reaches the daemon through
-`~/.cello-v2/daemon.sock` (or `$CELLO_V2_HOME/daemon.sock`), and access to that socket is the trust boundary.
+`~/.cello/daemon.sock` (or `$CELLO_HOME/daemon.sock`), and access to that socket is the trust boundary.
 
 ## Quick start
 

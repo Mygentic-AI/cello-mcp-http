@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { IpcClient } from "cello-v2/ipc-client";
+import { IpcClient } from "@cello-protocol/cli/ipc-client";
 
 const serverUrl = process.env["CELLO_URL"] as string;
 const PORT = Number(process.env["CELLO_WEB_PORT"] ?? 18621);
@@ -18,10 +18,10 @@ const LIMITED_PORT = PORT + 1;
 const base = `http://127.0.0.1:${PORT}`;
 const root = new URL("..", import.meta.url).pathname;
 const bin = join(root, "dist/bin/cello-mcp-http.js");
-const cliPath = join(root, "node_modules/cello-v2/dist/cli.js");
+const cliPath = join(root, "node_modules/@cello-protocol/cli/dist/cli.js");
 const scratch = mkdtempSync(join(tmpdir(), "cello-web-"));
-const ownerEnv = { ...process.env, CELLO_V2_HOME: join(scratch, "owner"), CELLO_DIR: join(scratch, "state") } as Record<string, string>;
-const peerEnv = { ...process.env, CELLO_V2_HOME: join(scratch, "peer") } as Record<string, string>;
+const ownerEnv = { ...process.env, CELLO_HOME: join(scratch, "owner"), CELLO_DIR: join(scratch, "state") } as Record<string, string>;
+const peerEnv = { ...process.env, CELLO_HOME: join(scratch, "peer") } as Record<string, string>;
 const STATIC = randomBytes(24).toString("hex");
 const tokenFile = join(scratch, "token");
 writeFileSync(tokenFile, STATIC, { mode: 0o600 });
@@ -31,6 +31,12 @@ const cli = (env: Record<string, string>, ...args: string[]): Record<string, unk
   return out.trim().startsWith("{") ? JSON.parse(out) as Record<string, unknown> : {};
 };
 const peer = (...args: string[]): Record<string, unknown> => cli(peerEnv, ...args, "--agent", "Bob");
+// A server registers only an agent with a verified email signal. Setup redeems a code at the stand-in issuer for the
+// first agent, as a person's does, and later agents on that machine copy its signal. Setup acts for a person: no caller.
+const setup = (env: Record<string, string>, name: string): Record<string, unknown> => cli(
+  { ...env, HOME: env["CELLO_HOME"] as string, CELLO_CALLER: "" },
+  "setup", "--yes", "--issuer", process.env["CELLO_TEST_ISSUER_URL"] as string, "--code", `live-${randomBytes(8).toString("hex")}`, "--name", name, "--json",
+);
 
 interface Running { child: ChildProcess; log: () => string }
 function startEndpoint(port: number, extra: string[]): Promise<Running> {
@@ -117,7 +123,10 @@ before(async () => {
   cli(ownerEnv, "login", "--server", serverUrl);
   cli(peerEnv, "login", "--server", serverUrl);
   endpoint = await startEndpoint(PORT, ["--public-url", base]);
-  bobId = (cli(peerEnv, "create-agent", "Bob")["agent_id"]) as string;
+  setup(ownerEnv, "Owner");
+  setup(peerEnv, "Bob");
+  bobId = (cli(peerEnv, "agents") as { agents: { name: string; agent_id: string }[] }).agents.find((a) => a.name === "Bob")?.agent_id as string;
+  assert.ok(bobId, "Bob was set up");
   cli(peerEnv, "use-agent", "--agent", "Bob");
 });
 
@@ -126,8 +135,8 @@ after(async () => {
   const evidence = join(homedir(), "cello-v2-live-runs", `web-endpoint-${new Date().toISOString().replaceAll(":", "-")}`);
   mkdirSync(evidence, { recursive: true });
   writeFileSync(join(evidence, "endpoint.log"), endpoint.log());
-  cpSync(join(ownerEnv["CELLO_V2_HOME"] as string, "daemon.log"), join(evidence, "owner-daemon.log"));
-  cpSync(join(peerEnv["CELLO_V2_HOME"] as string, "daemon.log"), join(evidence, "peer-daemon.log"));
+  cpSync(join(ownerEnv["CELLO_HOME"] as string, "daemon.log"), join(evidence, "owner-daemon.log"));
+  cpSync(join(peerEnv["CELLO_HOME"] as string, "daemon.log"), join(evidence, "peer-daemon.log"));
   if (limited) await stop(limited);
   for (const env of [ownerEnv, peerEnv]) {
     try { cli(env, "logout"); } catch { /* Already stopped. */ }
@@ -215,7 +224,7 @@ test("a reply lost on the way out loses no message", async () => {
   const before = (endpoint.log().match(/client_gone/g) ?? []).length;
   const paragraph = "A long plain letter about the weather and the harvest, written slowly over many pages. ".repeat(12_000);
   // Too long for a command line's arguments, so straight to the peer's daemon socket.
-  const bob = await IpcClient.connect(join(peerEnv["CELLO_V2_HOME"] as string, "daemon.sock"));
+  const bob = await IpcClient.connect(join(peerEnv["CELLO_HOME"] as string, "daemon.sock"));
   for (let i = 0; i < 6; i++) await bob.call("send", { agent: "Bob", caller: "cli", session_id: session, text: `${i} ${paragraph}`, signal: "standby", est_minutes: 1 });
   bob.close();
   const ready = async (): Promise<boolean> => {
@@ -286,7 +295,7 @@ test("a close and a seal go through the endpoint", async () => {
   });
   assert.ok(seals.length > 0);
   assert.ok(!endpoint.log().includes("orange-kettle"), "message text never reaches the log");
-  assert.ok(!readFileSync(join(ownerEnv["CELLO_V2_HOME"] as string, "daemon.log"), "utf8").includes("orange-kettle"));
+  assert.ok(!readFileSync(join(ownerEnv["CELLO_HOME"] as string, "daemon.log"), "utf8").includes("orange-kettle"));
 });
 
 // Plain HTTP on a socket we control, because a client library would read the reply for us.

@@ -13,10 +13,15 @@ server_dir="${CELLO_SERVER_DIR:-$HOME/code/cello-server}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-v2-web}" CELLO_PORT="${CELLO_PORT:-18620}"
 # The endpoints listen on the next two ports, so a run given its own CELLO_PORT shares nothing with another.
 export CELLO_WEB_PORT=$((CELLO_PORT + 1))
+# Servers require a verified email signal. The client's stand-in issuer gives one, and tells the server to count it.
+endpoint_dir="$here"; here="$client"
+CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-$HOME/code/cello-issuer}"
+. "$client/scripts/test-issuer-env.sh"
+here="$endpoint_dir"
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)
 export POSTGRES_PASSWORD CELLO_APP_PASSWORD
 if ! diff -r "$client/src/protocol" "$server_dir/src/protocol" >/dev/null; then
-  echo "The server's protocol copy differs from the client's." >&2
+  echo "The server's protocol copy differs from the client's. Point CELLO_SERVER_DIR at a server checkout that matches." >&2
   exit 1
 fi
 lock="$HOME/cello-v2-live-runs/.heavy-lock"

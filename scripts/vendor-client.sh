@@ -6,7 +6,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 client=$(cd "${1:?name a checkout of the client}" && pwd)
 mkdir -p "$here/vendor"
 (cd "$client" && npm pack --pack-destination "$here/vendor" >/dev/null)
-mv "$here"/vendor/cello-v2-*.tgz "$here/vendor/cello-v2.tgz"
+mv "$here"/vendor/cello-protocol-cli-*.tgz "$here/vendor/cello-cli.tgz"
 cd "$here"
-rm -rf node_modules/cello-v2
+rm -rf node_modules/@cello-protocol/cli
 npm install --no-audit --no-fund

@@ -27,7 +27,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "cello-v2": "file:vendor/cello-v2.tgz",
+    "@cello-protocol/cli": "file:vendor/cello-cli.tgz",
     "@modelcontextprotocol/node": "latest",
     "@modelcontextprotocol/sdk": "latest",
     "@modelcontextprotocol/server": "latest",
