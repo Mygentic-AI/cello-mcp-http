@@ -2,10 +2,17 @@
 # A real server from nothing, a real daemon, the built endpoint as its own process, and real HTTP MCP clients.
 # Usage: scripts/live-test.sh <client checkout>. It vendors that checkout first.
 set -eu
+# Two of seven early runs stalled for a minute or more. Both lined up exactly with the Mac idle-sleeping on battery
+# (pmset log: sleep at 08:51:01 and 09:03:01, then each daemon's "server.silent" at the next wake). Keep it awake.
+if [ -z "${CELLO_LIVE_AWAKE:-}" ] && command -v caffeinate >/dev/null 2>&1; then
+  CELLO_LIVE_AWAKE=1 exec caffeinate -i "$0" "$@"
+fi
 here=$(cd "$(dirname "$0")/.." && pwd)
 client=$(cd "${1:?name a checkout of the client}" && pwd)
 server_dir="${CELLO_SERVER_DIR:-$HOME/code/cello-server}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-v2-web}" CELLO_PORT="${CELLO_PORT:-18620}"
+# The endpoints listen on the next two ports, so a run given its own CELLO_PORT shares nothing with another.
+export CELLO_WEB_PORT=$((CELLO_PORT + 1))
 POSTGRES_PASSWORD=$(openssl rand -hex 16); CELLO_APP_PASSWORD=$(openssl rand -hex 16)
 export POSTGRES_PASSWORD CELLO_APP_PASSWORD
 if ! diff -r "$client/src/protocol" "$server_dir/src/protocol" >/dev/null; then
@@ -15,7 +22,7 @@ fi
 lock="$HOME/cello-v2-live-runs/.heavy-lock"
 held=""
 # A killed test skips its own cleanup. Only this run's daemons carry this port in their command.
-trap 'if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; pkill -f "daemon/main.js ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; pkill -f "cello-mcp-http.js --port 1862" 2>/dev/null || true; cd "$server_dir" && docker compose logs --timestamps server > "$HOME/cello-v2-live-runs/web-endpoint-server-$(date +%s).log" 2>&1; docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+trap 'if [ -n "$held" ]; then rmdir "$lock" 2>/dev/null; fi; pkill -f "daemon/main.js ws://127.0.0.1:$CELLO_PORT/v1" 2>/dev/null || true; pkill -f "cello-mcp-http.js --port $CELLO_WEB_PORT " 2>/dev/null || true; pkill -f "cello-mcp-http.js --port $((CELLO_WEB_PORT + 1)) " 2>/dev/null || true; cd "$server_dir" && docker compose logs --timestamps server > "$HOME/cello-v2-live-runs/web-endpoint-server-$(date +%s).log" 2>&1; docker compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
 waited=0
 until mkdir "$lock" 2>/dev/null; do
   waited=$((waited + 5))

@@ -13,8 +13,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { IpcClient } from "cello-v2/ipc-client";
 
 const serverUrl = process.env["CELLO_URL"] as string;
-const PORT = 18621;
-const LIMITED_PORT = 18622;
+const PORT = Number(process.env["CELLO_WEB_PORT"] ?? 18621);
+const LIMITED_PORT = PORT + 1;
 const base = `http://127.0.0.1:${PORT}`;
 const root = new URL("..", import.meta.url).pathname;
 const bin = join(root, "dist/bin/cello-mcp-http.js");
