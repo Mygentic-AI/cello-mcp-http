@@ -48,5 +48,10 @@ jobs:
       - name: The published package starts and prints its help
         run: |
           V="${GITHUB_REF_NAME#v}"
-          for i in 1 2 3 4 5 6 7 8 9 10; do npm view "@cello-protocol/mcp-http@$V" version && break; sleep 60; done
-          npx --yes "@cello-protocol/mcp-http@$V" --help | grep -q 'cello-mcp-http'
+          # npm lists a new version a few minutes after accepting it, and `npm view` can see it a moment before an
+          # install can (v0.2.0 failed here one second after the version appeared). So the install is what is retried.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if npx --yes --prefer-online "@cello-protocol/mcp-http@$V" --help > help.txt 2> err.txt; then break; fi
+            tail -2 err.txt; sleep 60
+          done
+          grep -q 'cello-mcp-http' help.txt
