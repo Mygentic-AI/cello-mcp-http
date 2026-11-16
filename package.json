@@ -22,12 +22,10 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "vendor-client": "scripts/vendor-client.sh",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@cello-protocol/cli": "file:vendor/cello-cli.tgz",
     "@modelcontextprotocol/node": "latest",
     "@modelcontextprotocol/sdk": "latest",
     "@modelcontextprotocol/server": "latest",
@@ -35,6 +33,7 @@
     "zod": "^4.4.2"
   },
   "devDependencies": {
+    "@cello-protocol/cli": "latest",
     "@types/express": "^5.0.6",
     "@types/node": "^25.6.2",
     "typescript": "^5.9.0",

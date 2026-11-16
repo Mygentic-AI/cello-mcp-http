@@ -11,11 +11,10 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { HTTP_USAGE, McpHttpConfigError, parseHttpArgs, readTokenFile } from "../http-config.js";
-import { startMcpHttpServer } from "../http-server.js";
 import { createPairingCode, PAIRING_TTL_MS } from "../pairing.js";
 import { listClients, revokeTokens } from "../oauth-store.js";
 import { logEvent } from "../log.js";
-import { socketPath } from "../v2.js";
+import { ClientLocateError } from "../client-locator.js";
 
 const pkg = createRequire(import.meta.url)("../../package.json") as { version: string };
 
@@ -61,6 +60,11 @@ try {
   const envToken = process.env["CELLO_MCP_HTTP_TOKEN"]?.trim() ?? "";
   const token = args.tokenFile !== undefined ? readTokenFile(args.tokenFile) : envToken;
 
+  // Loaded here, not at the top: these two load the installed CELLO client, and everything above runs without one.
+  const { CLIENT, socketPath } = await import("../v2.js");
+  const { startMcpHttpServer } = await import("../http-server.js");
+  logEvent("mcp.http.client.loaded", { ...CLIENT });
+
   const handle = await startMcpHttpServer({
     socketPath: socketPath(),
     host: args.host,
@@ -83,7 +87,7 @@ try {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 } catch (err: unknown) {
-  const reason = err instanceof McpHttpConfigError ? err.reason : "startup_failed";
+  const reason = err instanceof McpHttpConfigError || err instanceof ClientLocateError ? err.reason : "startup_failed";
   const message = err instanceof Error ? err.message : String(err);
   logEvent("mcp.http.config.invalid", { reason, message });
   process.stderr.write(`cello-mcp-http: ${message}\n`);

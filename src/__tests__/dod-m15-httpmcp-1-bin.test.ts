@@ -79,6 +79,54 @@ describe("082 cello-mcp-http binary", () => {
 
 });
 
+describe("the binary and the installed CELLO client", () => {
+  const NO_CLIENT = { CELLO_CLIENT_DIR: "", PATH: "/nonexistent-for-this-test" };
+
+  it("the built files never import the client by package name, so npm has no second copy to install", async () => {
+    const { readdir, readFile } = await import("node:fs/promises");
+    const dist = resolve(import.meta.dirname, "../../dist");
+    const built = (await readdir(dist, { recursive: true })).filter((f) => f.endsWith(".js") && !f.startsWith("__tests__"));
+    expect(built.length).toBeGreaterThan(5);
+    for (const f of built) expect(await readFile(join(dist, f), "utf8"), f).not.toMatch(/\b(from|import|require)\s*\(?\s*["']@cello-protocol\/cli/);
+    const manifest = JSON.parse(await readFile(resolve(dist, "../package.json"), "utf8")) as Record<string, Record<string, string> | undefined>;
+    for (const kind of ["dependencies", "peerDependencies", "optionalDependencies"]) expect(manifest[kind]?.["@cello-protocol/cli"], kind).toBeUndefined();
+  });
+
+  it("with no client on the machine: exits 1 naming the install command, and never listens", async () => {
+    dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
+    const r = run(["--port", String(await freePort())], { CELLO_MCP_HTTP_TOKEN: TOKEN, ...NO_CLIENT });
+    expect(await r.exited).toBe(1);
+    expect(r.out()).toMatch(/"reason":"client_not_found"/);
+    expect(r.out()).toMatch(/npm i -g @cello-protocol\/cli/);
+    expect(r.out()).not.toContain("mcp.http.listening");
+  });
+
+  it("with no client on the machine: --help, --version and pair still work", async () => {
+    dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
+    const help = run(["--help"], NO_CLIENT);
+    expect(await help.exited).toBe(0);
+    expect(help.out()).toContain("cello-mcp-http --port");
+    const version = run(["--version"], NO_CLIENT);
+    expect(await version.exited).toBe(0);
+    const pair = run(["pair"], NO_CLIENT);
+    expect(await pair.exited).toBe(0);
+    expect(pair.out()).toMatch(/Pairing code: /);
+  });
+
+  it("says at startup which client it loaded and from where", async () => {
+    dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
+    fake = await fakeDaemon(dir);
+    const r = run(["--port", String(await freePort())], { CELLO_MCP_HTTP_TOKEN: TOKEN });
+    await until(() => r.out().includes("mcp.http.listening"));
+    const loaded = r.out().split("\n").find((l) => l.includes("mcp.http.client.loaded"));
+    expect(loaded, r.out()).toBeDefined();
+    const event = JSON.parse(loaded!) as { dir: string; version: string; source: string };
+    expect(event.source).toBe("CELLO_CLIENT_DIR");
+    expect(event.dir).toBe(process.env["CELLO_CLIENT_DIR"]);
+    expect(event.version).toMatch(/^\d+\.\d+\.\d+/);
+  });
+});
+
 describe("083 operator commands", () => {
   it("pair prints a code that the endpoint's pairing check accepts once", async () => {
     dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
