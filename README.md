@@ -66,7 +66,7 @@ The endpoint must run **as the same user as the daemon**. It reaches the daemon 
    openssl rand -hex 32 > ~/.cello/mcp-http.token && chmod 600 ~/.cello/mcp-http.token
    ```
 
-2. **Decide what it may do.** Write a tools file. This one exposes everything except the four tools
+2. **Decide what it may do.** Write a tools file. This one exposes everything except the three tools
    that change reachability or the security layer:
 
    ```
@@ -450,8 +450,9 @@ this package.
 **It connects and lists no tools.** Your tools file may exclude them. An excluded tool is invisible, not
 refused. Check the file, and check it names `cello_*` tools.
 
-**It worked, then calls fail after the daemon was restarted.** Each call opens its own connection, so the next call reaches the new daemon. A restart forgets who holds each agent, so call `cello_use_agent` again. If calls still fail,
-after the daemon is up.
+**It worked, then calls fail after the daemon was restarted.** Each call opens its own connection, so the next call reaches the new daemon. A restart forgets who holds each agent, so call `cello_use_agent` again. If calls still fail
+once the daemon is up, check that `cello status` answers on that machine and that the endpoint runs
+as the same user as the daemon.
 
 **A sign-in page loads but the code is refused.** It expired (10 minutes), was already used, or five
 wrong tries burned it. Run `pair` again for a fresh one.
@@ -476,6 +477,7 @@ Tests live in `src/__tests__`. Publishing is by pushing a `v*` tag; CI type-chec
 
 ## Related
 
-- The CELLO client: the stdio MCP shim, for a client on the same machine as the daemon.
+- [The CELLO client](https://github.com/Mygentic-AI/cello): the stdio MCP shim, for a client on the same
+  machine as the daemon.
 - `@cello-protocol/cli` — the `cello` command and the daemon.
-- <https://cello.mygentic.ai> — the CELLO network.
+- <https://celloprotocol.com> — the CELLO network.
