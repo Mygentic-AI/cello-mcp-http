@@ -9,7 +9,7 @@
  *   3. The `cello` command on PATH.
  */
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 export const CLIENT_PACKAGE = "@cello-protocol/cli";
 const [CLIENT_SCOPE, CLIENT_NAME] = CLIENT_PACKAGE.split("/") as [string, string];
@@ -41,11 +41,21 @@ const INSTALL_HINT = `Install it with \`npm i -g ${CLIENT_PACKAGE}\`, or set CEL
 
 interface Manifest { name?: unknown; version?: unknown; exports?: unknown }
 
+/** Undefined only when there is no package.json. One that can't be read or parsed stops the lookup: it is never skipped. */
 function manifestAt(dir: string): Manifest | undefined {
+  const file = join(dir, "package.json");
+  let text: string;
   try {
-    return JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as Manifest;
-  } catch {
-    return undefined;
+    text = readFileSync(file, "utf8");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+    throw new ClientLocateError("client_unusable", `Can't read ${file}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  try {
+    return JSON.parse(text) as Manifest;
+  } catch (e) {
+    throw new ClientLocateError("client_unusable", `${file} isn't valid JSON, so the package there can't be identified: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -103,12 +113,14 @@ function clientOwning(file: string): string | undefined {
   }
 }
 
-function onPath(pathVar: string): string | undefined {
+function onPath(pathVar: string, platform: string): string | undefined {
   for (const entry of pathVar.split(delimiter)) {
-    if (entry === "") continue;
+    // A relative entry means "wherever I happen to be standing", which is not an install.
+    if (!isAbsolute(entry)) continue;
     const owner = clientOwning(join(entry, "cello"));
     if (owner !== undefined) return owner;
     // Windows: npm's global folder holds a `cello.cmd` beside its node_modules, and no link to follow.
+    if (platform !== "win32" || !existsSync(join(entry, "cello.cmd"))) continue;
     const windows = join(entry, "node_modules", CLIENT_SCOPE, CLIENT_NAME);
     if (isClient(windows)) return windows;
   }
@@ -119,9 +131,11 @@ export interface LocateInput {
   env: Readonly<Record<string, string | undefined>>;
   /** This package's own root folder. */
   ownDir: string;
+  /** Defaults to the running platform. */
+  platform?: string;
 }
 
-export function locateClient({ env, ownDir }: LocateInput): FoundClient {
+export function locateClient({ env, ownDir, platform = process.platform }: LocateInput): FoundClient {
   const named = env["CELLO_CLIENT_DIR"]?.trim();
   if (named !== undefined && named !== "") {
     const dir = resolve(named);
@@ -135,7 +149,7 @@ export function locateClient({ env, ownDir }: LocateInput): FoundClient {
   const beside = join(scopeDir, CLIENT_NAME);
   if (basename(scopeDir) === CLIENT_SCOPE && isClient(beside)) return use(beside, "beside");
 
-  const fromPath = onPath(env["PATH"] ?? "");
+  const fromPath = onPath(env["PATH"] ?? "", platform);
   if (fromPath !== undefined) return use(fromPath, "path");
 
   throw new ClientLocateError(

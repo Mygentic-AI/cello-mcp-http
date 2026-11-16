@@ -6,7 +6,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { ClientLocateError, CLIENT_SUBPATHS, locateClient } from "../client-locator.js";
 
 let scratch = "";
@@ -111,6 +111,42 @@ describe("finding the installed CELLO client", () => {
     const first = binLinkingTo(join(root, "a"), impostor);
     const second = binLinkingTo(join(root, "b"), real);
     expect(locateClient({ env: { PATH: `${first}:${second}` }, ownDir: root }).version).toBe("0.0.9");
+  });
+
+  it("a package.json that can't be parsed stops the lookup instead of being passed over for another client", () => {
+    const root = fresh();
+    const scope = join(root, "opt", "node_modules", "@cello-protocol");
+    const broken = client(join(scope, "cli"));
+    writeFileSync(join(broken, "package.json"), "{ not json");
+    const other = client(join(root, "global", "cli"), { version: "9.9.9" });
+    const PATH = binLinkingTo(root, other);
+    const beside = problem(() => locateClient({ env: { PATH }, ownDir: join(scope, "mcp-http") }));
+    expect(beside.reason).toBe("client_unusable");
+    expect(beside.message).toContain(join(broken, "package.json"));
+    expect(problem(() => locateClient({ env: { CELLO_CLIENT_DIR: broken, PATH }, ownDir: root })).reason).toBe("client_unusable");
+  });
+
+  it("a folder on PATH that merely has the client as a dependency is not an install of it", () => {
+    const root = fresh();
+    const project = join(root, "project");
+    client(join(project, "node_modules", "@cello-protocol", "cli"));
+    const input = { env: { PATH: project }, ownDir: join(root, "endpoint") };
+    expect(problem(() => locateClient({ ...input, platform: "linux" })).reason).toBe("client_not_found");
+    // Windows without npm's `cello.cmd` beside it is the same case.
+    expect(problem(() => locateClient({ ...input, platform: "win32" })).reason).toBe("client_not_found");
+    writeFileSync(join(project, "cello.cmd"), "@echo off\n");
+    expect(locateClient({ ...input, platform: "win32" }).source).toBe("path");
+    expect(problem(() => locateClient({ ...input, platform: "linux" })).reason).toBe("client_not_found");
+  });
+
+  it("a relative PATH entry is never searched", () => {
+    const root = fresh();
+    const installed = client(join(root, "lib", "cli"));
+    const bin = binLinkingTo(root, installed);
+    const ownDir = join(root, "endpoint");
+    // The same folder, named two ways. Only the absolute one counts.
+    expect(locateClient({ env: { PATH: bin }, ownDir }).source).toBe("path");
+    expect(problem(() => locateClient({ env: { PATH: relative(process.cwd(), bin) }, ownDir })).reason).toBe("client_not_found");
   });
 
   it("with no client anywhere, says where it looked and how to install one", () => {
