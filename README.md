@@ -49,6 +49,8 @@ exposure, and it is strictly safer.
 ## Requirements
 
 - A machine running the CELLO daemon, with at least one agent registered. Check with `cello status`.
+- The CELLO client installed on that machine (`npm i -g @cello-protocol/cli`), which it already is if the
+  daemon runs there. See [Which CELLO client it uses](#which-cello-client-it-uses).
 - Node.js 24 or newer on that machine.
 - For a client that is not on the same machine: a public HTTPS address for the endpoint
   (see [Giving it a public address](#giving-it-a-public-address)).
@@ -118,6 +120,23 @@ cello-mcp-http --port <n> --token-file <path> [options]
 | `--help`, `--version` | | |
 
 Other environment: `CELLO_DIR` moves the directory that holds `daemon.sock` (default `~/.cello`).
+`CELLO_CLIENT_DIR` names the folder of the CELLO client to use (below).
+
+### Which CELLO client it uses
+
+This package carries no copy of the CELLO client. At startup it loads the one already installed on the
+machine, so its tool list is the one your daemon understands and there is one client to keep up to date.
+It looks in this order and uses the first it finds:
+
+1. `CELLO_CLIENT_DIR`, if set: the folder holding the client's `package.json`. It is followed exactly.
+   A folder that does not hold the client stops startup.
+2. Beside this package, when both are installed into the same place (`npm i -g` of both).
+3. The `cello` command on `PATH`.
+
+The first log line at startup, `mcp.http.client.loaded`, says which folder and version it loaded. With no
+client found it does not start, and the error names the install command. A service manager often runs
+with a short `PATH`: if `cello` is not on it, install this package globally next to the client or set
+`CELLO_CLIENT_DIR`. `--help`, `--version`, `pair`, `clients` and `revoke` work without a client.
 
 Operator commands, run at the daemon's machine. They act on the state files directly, so they work
 whether or not the endpoint is running:
@@ -343,8 +362,9 @@ multiplexer while you are trying it out.
   `cello-mcp-http clients`.
 - **Change the agents or tools.** Edit the flag or the tools file and restart. Existing MCP sessions end
   with the process.
-- **Upgrade.** The tools come from the CELLO client package, which is a dependency. After
-  upgrading the CELLO CLI and daemon, restart the endpoint so it picks up the matching tool set.
+- **Upgrade.** The tools come from the CELLO client installed on the machine, loaded once at startup.
+  After upgrading the CELLO client and restarting its daemon, restart the endpoint so it loads the
+  matching tool set.
 - **Stop it.** `SIGINT` or `SIGTERM` closes it cleanly.
 
 The endpoint emits structured log events. The ones to know: `mcp.http.config.invalid` (startup
@@ -412,6 +432,8 @@ client and restart the endpoint.
 | Startup: `unknown_tool` | The tools file names a tool that does not exist | The error names it. |
 | Startup: `tools_empty` | The tools file leaves nothing exposed | Add at least one tool. |
 | Startup: `agents_empty`, `agent_unknown` | `--agents` is empty or names an agent the daemon does not have | The error lists what exists. |
+| Startup: `client_not_found` | No CELLO client beside this package or on `PATH`, or `CELLO_CLIENT_DIR` points somewhere else | `npm i -g @cello-protocol/cli`, or set `CELLO_CLIENT_DIR`. |
+| Startup: `client_unusable` | The client found is too old for this endpoint | Upgrade the client. The error names its folder and version. |
 | Startup: `daemon_unreachable` | The daemon is not running or the socket is elsewhere | Start the daemon; check `CELLO_DIR`. |
 | Startup: `bad_args` | An unknown flag, or a flag missing its value | See `--help`. |
 
@@ -442,6 +464,10 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+The client is a devDependency, for its types and for the tests, which point `CELLO_CLIENT_DIR` at it.
+Nothing built into `dist/` imports it by name. `scripts/live-test.sh <client checkout>` runs the built
+endpoint against a real server and real daemons from that checkout.
 
 Tests live in `src/__tests__`. Publishing is by pushing a `v*` tag; CI type-checks and tests first.
 

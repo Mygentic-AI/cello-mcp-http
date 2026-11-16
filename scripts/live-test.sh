@@ -1,6 +1,7 @@
 #!/bin/sh
 # A real server from nothing, a real daemon, the built endpoint as its own process, and real HTTP MCP clients.
-# Usage: scripts/live-test.sh <client checkout>. It vendors that checkout first.
+# Usage: scripts/live-test.sh <client checkout>. The checkout needs its dependencies installed. It is built here, and
+# both the daemons and the endpoint run from it (CELLO_CLIENT_DIR), so one client version is under test.
 set -eu
 # Two of seven early runs stalled for a minute or more. Both lined up exactly with the Mac idle-sleeping on battery
 # (pmset log: sleep at 08:51:01 and 09:03:01, then each daemon's "server.silent" at the next wake). Keep it awake.
@@ -35,7 +36,9 @@ until mkdir "$lock" 2>/dev/null; do
   sleep 5
 done
 held=1
-"$here/scripts/vendor-client.sh" "$client" >/dev/null 2>&1
+[ -d "$client/node_modules" ] || { echo "$client has no node_modules. Install the client's dependencies there first." >&2; exit 1; }
+(cd "$client" && npm run build >/dev/null)
+export CELLO_CLIENT_DIR="$client"
 (cd "$here" && npm run build >/dev/null)
 cd "$server_dir"
 docker compose up -d --build --wait server || { docker compose logs migrate postgres 2>&1 | tail -30; exit 1; }

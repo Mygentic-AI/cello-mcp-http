@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { IpcClient } from "@cello-protocol/cli/ipc-client";
+// The same client the endpoint under test loads: the checkout live-test.sh names in CELLO_CLIENT_DIR.
+import { IpcClient } from "../dist/v2.js";
 
 const serverUrl = process.env["CELLO_URL"] as string;
 const PORT = Number(process.env["CELLO_WEB_PORT"] ?? 18621);
@@ -18,7 +19,7 @@ const LIMITED_PORT = PORT + 1;
 const base = `http://127.0.0.1:${PORT}`;
 const root = new URL("..", import.meta.url).pathname;
 const bin = join(root, "dist/bin/cello-mcp-http.js");
-const cliPath = join(root, "node_modules/@cello-protocol/cli/dist/cli.js");
+const cliPath = join(process.env["CELLO_CLIENT_DIR"] as string, "dist/cli.js");
 const scratch = mkdtempSync(join(tmpdir(), "cello-web-"));
 const ownerEnv = { ...process.env, CELLO_HOME: join(scratch, "owner"), CELLO_DIR: join(scratch, "state") } as Record<string, string>;
 const peerEnv = { ...process.env, CELLO_HOME: join(scratch, "peer") } as Record<string, string>;
