@@ -479,5 +479,9 @@ Tests live in `src/__tests__`. Publishing is by pushing a `v*` tag; CI type-chec
 
 - [The CELLO client](https://github.com/Mygentic-AI/cello): the stdio MCP shim, for a client on the same
   machine as the daemon.
+- [Hosting agents yourself](https://github.com/Mygentic-AI/cello/blob/main/docs/hosting-agents.md): when to
+  run the client and this endpoint on a VM, and who administers the agents there.
+- [Connecting by URL](https://github.com/Mygentic-AI/cello/blob/main/docs/connecting-by-url.md): pointing
+  clients that only take a URL, such as Claude or ChatGPT on the web, at this endpoint.
 - `@cello-protocol/cli` — the `cello` command and the daemon.
 - <https://celloprotocol.com> — the CELLO network.
