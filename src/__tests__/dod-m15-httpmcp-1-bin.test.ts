@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -111,6 +111,24 @@ describe("the binary and the installed CELLO client", () => {
     const pair = run(["pair"], NO_CLIENT);
     expect(await pair.exited).toBe(0);
     expect(pair.out()).toMatch(/Pairing code: /);
+  });
+
+  it("a client whose parts load but lack a name the endpoint uses: exits 1 naming it, before listening", async () => {
+    dir = await mkdtemp(join(tmpdir(), "httpmcp-bin-"));
+    const old = join(dir, "old-client");
+    await mkdir(join(old, "dist"), { recursive: true });
+    const parts = ["operations", "ipc-client", "mcp-tools", "paths"];
+    for (const p of parts) await writeFile(join(old, "dist", `${p}.js`), p === "operations" ? "export const OPERATIONS = [];\n" : "export {};\n");
+    await writeFile(join(old, "package.json"), JSON.stringify({
+      name: "@cello-protocol/cli", version: "0.0.2", type: "module",
+      exports: Object.fromEntries(parts.map((p) => [`./${p}`, { default: `./dist/${p}.js` }])),
+    }));
+    const r = run(["--port", String(await freePort())], { CELLO_MCP_HTTP_TOKEN: TOKEN, CELLO_CLIENT_DIR: old });
+    expect(await r.exited).toBe(1);
+    expect(r.out()).toMatch(/"reason":"client_unusable"/);
+    expect(r.out()).toMatch(/has no "DaemonGone" in its "ipc-client" part/);
+    expect(r.out()).toContain("0.0.2");
+    expect(r.out()).not.toContain("mcp.http.listening");
   });
 
   it("says at startup which client it loaded and from where", async () => {
