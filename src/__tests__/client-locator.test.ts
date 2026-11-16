@@ -126,6 +126,18 @@ describe("finding the installed CELLO client", () => {
     expect(problem(() => locateClient({ env: { CELLO_CLIENT_DIR: broken, PATH }, ownDir: root })).reason).toBe("client_unusable");
   });
 
+  it("a broken package.json reached by following `cello` on PATH says how the lookup got there", () => {
+    const root = fresh();
+    const other = client(join(root, "music", "cello-player"), { name: "cello-player" });
+    writeFileSync(join(other, "package.json"), "{ not json");
+    const bin = binLinkingTo(root, other);
+    const e = problem(() => locateClient({ env: { PATH: bin }, ownDir: join(root, "endpoint") }));
+    expect(e.reason).toBe("client_unusable");
+    expect(e.message).toContain(join(bin, "cello"));
+    expect(e.message).toContain(join(other, "package.json"));
+    expect(e.message).toMatch(/CELLO_CLIENT_DIR/);
+  });
+
   it("a folder on PATH that merely has the client as a dependency is not an install of it", () => {
     const root = fresh();
     const project = join(root, "project");

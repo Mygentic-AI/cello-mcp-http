@@ -117,7 +117,15 @@ function onPath(pathVar: string, platform: string): string | undefined {
   for (const entry of pathVar.split(delimiter)) {
     // A relative entry means "wherever I happen to be standing", which is not an install.
     if (!isAbsolute(entry)) continue;
-    const owner = clientOwning(join(entry, "cello"));
+    const command = join(entry, "cello");
+    let owner: string | undefined;
+    try {
+      owner = clientOwning(command);
+    } catch (e) {
+      // The file named may have nothing to do with CELLO, so say how the lookup reached it.
+      if (e instanceof ClientLocateError) throw new ClientLocateError(e.reason, `While working out which package owns the \`cello\` command at ${command}: ${e.message} Set CELLO_CLIENT_DIR to the client's folder to skip this search.`);
+      throw e;
+    }
     if (owner !== undefined) return owner;
     // Windows: npm's global folder holds a `cello.cmd` beside its node_modules, and no link to follow.
     if (platform !== "win32" || !existsSync(join(entry, "cello.cmd"))) continue;

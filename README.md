@@ -138,6 +138,9 @@ client found it does not start, and the error names the install command. A servi
 with a short `PATH`: if `cello` is not on it, install this package globally next to the client or set
 `CELLO_CLIENT_DIR`. `--help`, `--version`, `pair`, `clients` and `revoke` work without a client.
 
+A client installed with pnpm or Volta is not found through `PATH`: their `cello` is a small launcher
+script, not a link into the package. Set `CELLO_CLIENT_DIR` to the client's folder there.
+
 Operator commands, run at the daemon's machine. They act on the state files directly, so they work
 whether or not the endpoint is running:
 
