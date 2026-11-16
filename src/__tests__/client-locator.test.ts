@@ -126,10 +126,14 @@ describe("finding the installed CELLO client", () => {
     expect(e.message).toContain("mcp-tools");
   });
 
-  it("a part the client lists but whose file is missing is unusable too", () => {
+  it("a part the client lists but whose file is missing says to build or reinstall, not to upgrade", () => {
     const root = fresh();
     const dir = client(join(root, "named"));
     rmSync(join(dir, "dist", "paths.js"));
-    expect(problem(() => locateClient({ env: { CELLO_CLIENT_DIR: dir }, ownDir: root })).reason).toBe("client_unusable");
+    const e = problem(() => locateClient({ env: { CELLO_CLIENT_DIR: dir }, ownDir: root }));
+    expect(e.reason).toBe("client_unusable");
+    expect(e.message).toContain(join(dir, "dist", "paths.js"));
+    expect(e.message).toMatch(/npm run build/);
+    expect(e.message).not.toMatch(/Upgrade it/);
   });
 });

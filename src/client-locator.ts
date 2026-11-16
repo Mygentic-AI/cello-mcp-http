@@ -69,11 +69,17 @@ function use(dir: string, source: ClientSource): FoundClient {
   const files = {} as Record<ClientSubpath, string>;
   for (const sub of CLIENT_SUBPATHS) {
     const rel = exportedFile(exported[sub]);
-    const file = rel === undefined ? undefined : resolve(dir, rel);
-    if (file === undefined || !existsSync(file)) {
+    if (rel === undefined) {
       throw new ClientLocateError(
         "client_unusable",
         `The CELLO client at ${dir} (version ${version}) has no "${sub.slice(2)}" part, which this endpoint needs. Upgrade it: \`npm i -g ${CLIENT_PACKAGE}\`.`,
+      );
+    }
+    const file = resolve(dir, rel);
+    if (!existsSync(file)) {
+      throw new ClientLocateError(
+        "client_unusable",
+        `The CELLO client at ${dir} (version ${version}) lists its "${sub.slice(2)}" part at ${file}, and that file isn't there. A checkout needs building first (\`npm run build\` in that folder); an install that lost files needs reinstalling.`,
       );
     }
     files[sub] = file;
