@@ -85,7 +85,13 @@ describe("finding the installed CELLO client", () => {
     const named = client(join(root, "named"), { version: "3.0.0" });
     const onPath = client(join(root, "global", "cli"), { version: "1.0.0" });
     const PATH = binLinkingTo(root, onPath);
-    expect(locateClient({ env: { CELLO_CLIENT_DIR: named, PATH }, ownDir: root }).version).toBe("3.0.0");
+    const scope = join(root, "opt", "node_modules", "@cello-protocol");
+    client(join(scope, "cli"), { version: "2.0.0" });
+    const ownDir = join(scope, "mcp-http");
+    const chosen = locateClient({ env: { CELLO_CLIENT_DIR: named, PATH }, ownDir });
+    expect(chosen.version).toBe("3.0.0");
+    expect(chosen.source).toBe("CELLO_CLIENT_DIR");
+    expect(locateClient({ env: { CELLO_CLIENT_DIR: "  ", PATH }, ownDir }).version).toBe("2.0.0");
     expect(locateClient({ env: { CELLO_CLIENT_DIR: "  ", PATH }, ownDir: root }).version).toBe("1.0.0");
   });
 
