@@ -14,7 +14,7 @@ server_dir="${CELLO_SERVER_DIR:-$HOME/code/cello-server}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cello-web}" CELLO_PORT="${CELLO_PORT:-18620}"
 # The endpoints listen on the next two ports, so a run given its own CELLO_PORT shares nothing with another.
 export CELLO_WEB_PORT=$((CELLO_PORT + 1))
-# Servers require a verified email signal. The client's stand-in issuer gives one, and tells the server to count it.
+# Servers require a verified email or phone signal. The client's stand-in issuer gives one, and tells the server to count it.
 endpoint_dir="$here"; here="$client"
 CELLO_ISSUER_DIR="${CELLO_ISSUER_DIR:-$HOME/code/cello-issuer}"
 . "$client/scripts/test-issuer-env.sh"

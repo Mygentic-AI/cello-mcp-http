@@ -32,7 +32,7 @@ const cli = (env: Record<string, string>, ...args: string[]): Record<string, unk
   return out.trim().startsWith("{") ? JSON.parse(out) as Record<string, unknown> : {};
 };
 const peer = (...args: string[]): Record<string, unknown> => cli(peerEnv, ...args, "--agent", "Bob");
-// A server registers only an agent with a verified email signal. Setup redeems a code at the stand-in issuer for the
+// A server registers only an agent with a verified email or phone signal. Setup redeems a code at the stand-in issuer for the
 // first agent, as a person's does, and later agents on that machine copy its signal. Setup acts for a person: no caller.
 const setup = (env: Record<string, string>, name: string): Record<string, unknown> => cli(
   { ...env, HOME: env["CELLO_HOME"] as string, CELLO_CALLER: "" },
